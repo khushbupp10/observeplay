@@ -225,12 +225,13 @@ function attachVoiceHandler(
     return () => {};
   }
 
-  const recognition = new (SpeechRecognitionCtor as new () => SpeechRecognition)();
+  const recognition = new (SpeechRecognitionCtor as new () => { continuous: boolean; interimResults: boolean; onresult: ((event: Event) => void) | null; start: () => void; stop: () => void })();
   recognition.continuous = true;
   recognition.interimResults = false;
 
-  recognition.onresult = (event: SpeechRecognitionEvent) => {
-    const last = event.results[event.results.length - 1];
+  recognition.onresult = (event: Event) => {
+    const srEvent = event as Event & { results: { length: number; [index: number]: { isFinal: boolean; 0?: { transcript?: string } } } };
+    const last = srEvent.results[srEvent.results.length - 1];
     if (last?.isFinal) {
       const transcript = last[0]?.transcript?.trim().toLowerCase() ?? '';
       onAction(buildGameAction(mapping, { transcript }));
