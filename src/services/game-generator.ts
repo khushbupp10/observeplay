@@ -1,0 +1,710 @@
+import type { Genre, InputMethod } from '../types/common';
+import type { AccessibilityProfile } from '../types/player';
+import type {
+  GameSpec,
+  GameRule,
+  WinCondition,
+  GameMechanic,
+  InteractionMapping,
+  AssetReference,
+  AccessibilityAdaptation,
+} from '../types/game';
+
+// ---------------------------------------------------------------------------
+// Request / Result types
+// ---------------------------------------------------------------------------
+
+export interface GameGenerationRequest {
+  playerDescription: string;
+  profile: AccessibilityProfile;
+  preferredGenre?: Genre;
+  sessionId: string;
+}
+
+export interface GameGenerationResult {
+  success: boolean;
+  gameSpec?: GameSpec;
+  conflicts?: ConflictDescription[];
+  generationTimeMs: number;
+}
+
+export interface ConflictDescription {
+  requirement1: string;
+  requirement2: string;
+  explanation: string;
+}
+
+export interface ConflictDetectionResult {
+  hasConflicts: boolean;
+  conflicts: ConflictDescription[];
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  invalidMappings: InvalidMapping[];
+}
+
+export interface InvalidMapping {
+  mechanicId: string;
+  inputMethod: InputMethod;
+  reason: string;
+}
+
+// ---------------------------------------------------------------------------
+// LLM Provider abstraction
+// ---------------------------------------------------------------------------
+
+export interface LLMProvider {
+  generateGameSpec(prompt: string, genre: Genre): Promise<GameSpec>;
+}
+
+// ---------------------------------------------------------------------------
+// Conflict pair definitions
+// ---------------------------------------------------------------------------
+
+interface ConflictPair {
+  keywords1: string[];
+  keywords2: string[];
+  explanation: string;
+}
+
+const CONFLICT_PAIRS: ConflictPair[] = [
+  {
+    keywords1: ['fast-paced', 'fast paced', 'high speed', 'rapid', 'quick action'],
+    keywords2: ['no time pressure', 'no timer', 'relaxed pace', 'untimed', 'no rush'],
+    explanation: 'Fast-paced gameplay conflicts with no time pressure',
+  },
+  {
+    keywords1: ['complex controls', 'many buttons', 'complex input'],
+    keywords2: ['simple controls', 'one button', 'single switch', 'minimal input'],
+    explanation: 'Complex controls conflict with simple/minimal input requirements',
+  },
+  {
+    keywords1: ['multiplayer', 'competitive', 'pvp'],
+    keywords2: ['single player', 'solo', 'alone'],
+    explanation: 'Multiplayer mode conflicts with single-player requirement',
+  },
+  {
+    keywords1: ['text heavy', 'lots of reading', 'text-based'],
+    keywords2: ['no reading', 'no text', 'audio only'],
+    explanation: 'Text-heavy gameplay conflicts with no-reading requirement',
+  },
+  {
+    keywords1: ['visually complex', 'detailed graphics', 'many visual elements'],
+    keywords2: ['minimal visuals', 'simple graphics', 'low visual complexity'],
+    explanation: 'Visually complex gameplay conflicts with minimal visual requirements',
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Genre templates for mock/template-based generation
+// ---------------------------------------------------------------------------
+
+interface GenreTemplate {
+  genre: Genre;
+  titlePrefix: string;
+  ruleTemplates: Omit<GameRule, 'id'>[];
+  winConditionTemplates: Omit<WinCondition, 'id'>[];
+  mechanicTemplates: Omit<GameMechanic, 'id'>[];
+  estimatedPlayTime: number;
+}
+
+const GENRE_TEMPLATES: Record<Genre, GenreTemplate> = {
+  puzzle: {
+    genre: 'puzzle',
+    titlePrefix: 'Puzzle Quest',
+    ruleTemplates: [
+      { description: 'Match three or more tiles to clear them', condition: 'tiles_matched >= 3', effect: 'clear_tiles' },
+      { description: 'Cleared tiles award points', condition: 'tiles_cleared', effect: 'add_score' },
+    ],
+    winConditionTemplates: [
+      { description: 'Clear all puzzle tiles to win', condition: 'all_tiles_cleared' },
+    ],
+    mechanicTemplates: [
+      { name: 'tile_select', description: 'Select a tile on the board', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'touch', 'voice', 'eye_tracking', 'single_switch'], difficulty: 0.2 },
+      { name: 'tile_swap', description: 'Swap two adjacent tiles', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'touch', 'voice', 'eye_tracking'], difficulty: 0.3 },
+    ],
+    estimatedPlayTime: 10,
+  },
+  adventure: {
+    genre: 'adventure',
+    titlePrefix: 'Adventure',
+    ruleTemplates: [
+      { description: 'Explore areas to discover items and clues', condition: 'player_enters_area', effect: 'reveal_items' },
+      { description: 'Collect items to solve puzzles', condition: 'item_collected', effect: 'update_inventory' },
+    ],
+    winConditionTemplates: [
+      { description: 'Reach the final destination to complete the adventure', condition: 'reached_destination' },
+    ],
+    mechanicTemplates: [
+      { name: 'move', description: 'Move character in a direction', requiredInputMethods: ['keyboard'], alternativeInputMethods: ['voice', 'touch', 'gamepad', 'eye_tracking', 'single_switch'], difficulty: 0.2 },
+      { name: 'interact', description: 'Interact with objects in the environment', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'voice', 'touch', 'eye_tracking', 'single_switch'], difficulty: 0.3 },
+      { name: 'use_item', description: 'Use an item from inventory', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'voice', 'touch', 'single_switch'], difficulty: 0.3 },
+    ],
+    estimatedPlayTime: 20,
+  },
+  strategy: {
+    genre: 'strategy',
+    titlePrefix: 'Strategy',
+    ruleTemplates: [
+      { description: 'Place units on the board during your turn', condition: 'player_turn', effect: 'allow_placement' },
+      { description: 'Units attack adjacent enemies automatically', condition: 'adjacent_enemy', effect: 'auto_attack' },
+    ],
+    winConditionTemplates: [
+      { description: 'Defeat all enemy units to win', condition: 'all_enemies_defeated' },
+    ],
+    mechanicTemplates: [
+      { name: 'select_unit', description: 'Select a unit to command', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'touch', 'voice', 'eye_tracking', 'single_switch'], difficulty: 0.3 },
+      { name: 'place_unit', description: 'Place a unit on the board', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'touch', 'voice', 'eye_tracking'], difficulty: 0.4 },
+      { name: 'end_turn', description: 'End your current turn', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'voice', 'touch', 'single_switch', 'gamepad'], difficulty: 0.1 },
+    ],
+    estimatedPlayTime: 25,
+  },
+  simulation: {
+    genre: 'simulation',
+    titlePrefix: 'Sim',
+    ruleTemplates: [
+      { description: 'Resources accumulate over time', condition: 'time_passes', effect: 'add_resources' },
+      { description: 'Build structures using resources', condition: 'resources_available', effect: 'allow_building' },
+    ],
+    winConditionTemplates: [
+      { description: 'Build a thriving community to complete the simulation', condition: 'community_thriving' },
+    ],
+    mechanicTemplates: [
+      { name: 'build', description: 'Build a structure', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'touch', 'voice', 'eye_tracking', 'single_switch'], difficulty: 0.3 },
+      { name: 'manage', description: 'Manage resources and settings', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'touch', 'voice', 'single_switch'], difficulty: 0.4 },
+    ],
+    estimatedPlayTime: 30,
+  },
+  narrative: {
+    genre: 'narrative',
+    titlePrefix: 'Story',
+    ruleTemplates: [
+      { description: 'Choices affect the story outcome', condition: 'choice_made', effect: 'branch_narrative' },
+      { description: 'Dialogue reveals character motivations', condition: 'dialogue_triggered', effect: 'reveal_info' },
+    ],
+    winConditionTemplates: [
+      { description: 'Reach one of the story endings', condition: 'story_complete' },
+    ],
+    mechanicTemplates: [
+      { name: 'choose', description: 'Make a narrative choice', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'voice', 'touch', 'eye_tracking', 'single_switch', 'sip_puff'], difficulty: 0.1 },
+      { name: 'dialogue', description: 'Engage in dialogue with characters', requiredInputMethods: ['mouse'], alternativeInputMethods: ['keyboard', 'voice', 'touch', 'single_switch'], difficulty: 0.2 },
+    ],
+    estimatedPlayTime: 15,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Genre detection from description
+// ---------------------------------------------------------------------------
+
+const GENRE_KEYWORDS: Record<Genre, string[]> = {
+  puzzle: ['puzzle', 'match', 'brain', 'logic', 'riddle', 'sudoku', 'crossword', 'jigsaw', 'tile'],
+  adventure: ['adventure', 'explore', 'quest', 'journey', 'discover', 'treasure', 'dungeon', 'space'],
+  strategy: ['strategy', 'tactical', 'war', 'battle', 'defend', 'tower defense', 'chess', 'plan'],
+  simulation: ['simulation', 'sim', 'build', 'manage', 'farm', 'city', 'tycoon', 'sandbox'],
+  narrative: ['story', 'narrative', 'choose your own', 'visual novel', 'dialogue', 'mystery', 'detective'],
+};
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+function detectGenre(description: string, preferred?: Genre): Genre {
+  if (preferred) return preferred;
+
+  const lower = description.toLowerCase();
+  let bestGenre: Genre = 'adventure'; // default
+  let bestScore = 0;
+
+  for (const [genre, keywords] of Object.entries(GENRE_KEYWORDS) as [Genre, string[]][]) {
+    let score = 0;
+    for (const keyword of keywords) {
+      if (lower.includes(keyword)) score++;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestGenre = genre;
+    }
+  }
+
+  return bestGenre;
+}
+
+function findCompatibleInputMethod(
+  requiredMethods: InputMethod[],
+  alternativeMethods: InputMethod[],
+  playerMethods: InputMethod[],
+): InputMethod | null {
+  // First check if any required method is available
+  for (const method of requiredMethods) {
+    if (playerMethods.includes(method)) return method;
+  }
+  // Then check alternatives
+  for (const method of alternativeMethods) {
+    if (playerMethods.includes(method)) return method;
+  }
+  return null;
+}
+
+function buildInteractionMappings(
+  mechanics: GameMechanic[],
+  playerMethods: InputMethod[],
+): InteractionMapping[] {
+  const mappings: InteractionMapping[] = [];
+
+  for (const mechanic of mechanics) {
+    const method = findCompatibleInputMethod(
+      mechanic.requiredInputMethods,
+      mechanic.alternativeInputMethods,
+      playerMethods,
+    );
+
+    if (method) {
+      mappings.push({
+        mechanicId: mechanic.id,
+        inputMethod: method,
+        binding: buildBinding(method, mechanic.name),
+      });
+    }
+  }
+
+  return mappings;
+}
+
+function buildBinding(method: InputMethod, mechanicName: string): string {
+  switch (method) {
+    case 'keyboard': return `key:${mechanicName}`;
+    case 'mouse': return `mouse:click_${mechanicName}`;
+    case 'touch': return `touch:tap_${mechanicName}`;
+    case 'voice': return `voice:${mechanicName.replace(/_/g, ' ')}`;
+    case 'single_switch': return `switch:activate_${mechanicName}`;
+    case 'eye_tracking': return `eye:gaze_${mechanicName}`;
+    case 'head_tracking': return `head:nod_${mechanicName}`;
+    case 'sip_puff': return `sip_puff:${mechanicName}`;
+    case 'gamepad': return `gamepad:button_${mechanicName}`;
+    default: return `${method}:${mechanicName}`;
+  }
+}
+
+function buildAccessibilityAdaptations(
+  mechanics: GameMechanic[],
+  profile: AccessibilityProfile,
+): AccessibilityAdaptation[] {
+  const adaptations: AccessibilityAdaptation[] = [];
+
+  for (const mechanic of mechanics) {
+    // Add pacing adaptation for slow-paced preference
+    if (profile.preferredPacing === 'slow') {
+      adaptations.push({
+        mechanicId: mechanic.id,
+        adaptationType: 'pacing_adjustment',
+        parameters: { speedMultiplier: 0.5 },
+      });
+    }
+
+    // Add visual adaptations for low vision
+    if (profile.minReadableTextSize > 16) {
+      adaptations.push({
+        mechanicId: mechanic.id,
+        adaptationType: 'enlarge_text',
+        parameters: { minSize: profile.minReadableTextSize },
+      });
+    }
+
+    // Add contrast adaptations
+    if (profile.minContrastRatio > 4.5) {
+      adaptations.push({
+        mechanicId: mechanic.id,
+        adaptationType: 'high_contrast',
+        parameters: { minRatio: profile.minContrastRatio },
+      });
+    }
+  }
+
+  return adaptations;
+}
+
+function generateVisualAssets(genre: Genre, title: string): AssetReference[] {
+  return [
+    {
+      id: generateId(),
+      type: 'image',
+      url: `/assets/${genre}/background.png`,
+      altText: `${title} background scene`,
+    },
+    {
+      id: generateId(),
+      type: 'image',
+      url: `/assets/${genre}/ui-elements.png`,
+      altText: `${title} user interface elements`,
+    },
+    {
+      id: generateId(),
+      type: 'animation',
+      url: `/assets/${genre}/character.anim`,
+      altText: `${title} character animation`,
+    },
+  ];
+}
+
+function generateAudioAssets(genre: Genre, title: string): AssetReference[] {
+  return [
+    {
+      id: generateId(),
+      type: 'audio',
+      url: `/assets/${genre}/background-music.mp3`,
+      altText: `${title} background music`,
+    },
+    {
+      id: generateId(),
+      type: 'soundscape',
+      url: `/assets/${genre}/ambient.mp3`,
+      altText: `${title} ambient soundscape`,
+      spatialPosition: { azimuth: 0, elevation: 0, distance: 0.5 },
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// TemplateBasedLLMProvider (mock/default implementation)
+// ---------------------------------------------------------------------------
+
+export class TemplateBasedLLMProvider implements LLMProvider {
+  async generateGameSpec(prompt: string, genre: Genre): Promise<GameSpec> {
+    const template = GENRE_TEMPLATES[genre];
+    const id = generateId();
+
+    const rules: GameRule[] = template.ruleTemplates.map((r, i) => ({
+      ...r,
+      id: `rule-${id}-${i}`,
+    }));
+
+    const winConditions: WinCondition[] = template.winConditionTemplates.map((w, i) => ({
+      ...w,
+      id: `win-${id}-${i}`,
+    }));
+
+    const mechanics: GameMechanic[] = template.mechanicTemplates.map((m, i) => ({
+      ...m,
+      id: `mech-${id}-${i}`,
+    }));
+
+    return {
+      id,
+      genre,
+      title: `${template.titlePrefix}: ${prompt.substring(0, 50)}`,
+      description: prompt,
+      createdAt: Date.now(),
+      playerDescription: prompt,
+      rules,
+      winConditions,
+      mechanics,
+      interactionMappings: [], // filled in by the service
+      visualAssets: [],        // filled in by the service
+      audioAssets: [],         // filled in by the service
+      accessibilityAdaptations: [],
+      estimatedPlayTimeMinutes: template.estimatedPlayTime,
+      difficultyLevel: 'adaptive',
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GameGeneratorService
+// ---------------------------------------------------------------------------
+
+/** 30-second generation time limit. */
+const GENERATION_TIMEOUT_MS = 30_000;
+
+/** 15-second modification time limit. */
+const MODIFICATION_TIMEOUT_MS = 15_000;
+
+export class GameGeneratorService {
+  private llmProvider: LLMProvider;
+
+  constructor(llmProvider?: LLMProvider) {
+    this.llmProvider = llmProvider ?? new TemplateBasedLLMProvider();
+  }
+
+  /**
+   * Generate a new game from a natural language description + accessibility profile.
+   *
+   * Pipeline: parse description → load profile → detect conflicts → construct prompt
+   * → generate GameSpec → validate interactions → generate assets → progressive delivery.
+   *
+   * Requirements: 1.1, 1.2, 1.3, 1.5, 1.7, 1.8
+   */
+  async generateGame(request: GameGenerationRequest): Promise<GameGenerationResult> {
+    const startTime = Date.now();
+
+    // Validate input
+    if (!request.playerDescription || request.playerDescription.trim().length === 0) {
+      return {
+        success: false,
+        generationTimeMs: Date.now() - startTime,
+        conflicts: [{ requirement1: 'description', requirement2: '', explanation: 'Game description cannot be empty' }],
+      };
+    }
+
+    if (!request.profile.inputMethods || request.profile.inputMethods.length === 0) {
+      return {
+        success: false,
+        generationTimeMs: Date.now() - startTime,
+        conflicts: [{ requirement1: 'input_methods', requirement2: '', explanation: 'At least one input method is required in the accessibility profile' }],
+      };
+    }
+
+    // Step 1: Detect conflicts in the description
+    const conflictResult = this.detectConflicts(request.playerDescription);
+    if (conflictResult.hasConflicts) {
+      return {
+        success: false,
+        conflicts: conflictResult.conflicts,
+        generationTimeMs: Date.now() - startTime,
+      };
+    }
+
+    // Step 2: Detect genre
+    const genre = detectGenre(request.playerDescription, request.preferredGenre);
+
+    // Step 3: Generate GameSpec via LLM provider with timeout
+    let gameSpec: GameSpec;
+    try {
+      gameSpec = await withTimeout(
+        this.llmProvider.generateGameSpec(request.playerDescription, genre),
+        GENERATION_TIMEOUT_MS,
+      );
+    } catch (error) {
+      // Timeout or generation failure — return partial result
+      return {
+        success: false,
+        generationTimeMs: Date.now() - startTime,
+        conflicts: [{
+          requirement1: 'generation',
+          requirement2: '',
+          explanation: error instanceof TimeoutError
+            ? 'Game generation exceeded 30-second time limit'
+            : `Game generation failed: ${(error as Error).message}`,
+        }],
+      };
+    }
+
+    // Step 4: Build interaction mappings compatible with player's input methods
+    const mappings = buildInteractionMappings(gameSpec.mechanics, request.profile.inputMethods);
+    gameSpec.interactionMappings = mappings;
+
+    // Step 5: Validate interactions
+    const validation = this.validateInteractions(gameSpec, request.profile.inputMethods);
+    if (!validation.valid) {
+      // Retry: try to adapt mechanics with alternative input methods
+      for (const invalid of validation.invalidMappings) {
+        const mechanic = gameSpec.mechanics.find((m) => m.id === invalid.mechanicId);
+        if (mechanic) {
+          // Add all player methods as alternatives so the mechanic becomes accessible
+          mechanic.alternativeInputMethods = [
+            ...new Set([...mechanic.alternativeInputMethods, ...request.profile.inputMethods]),
+          ];
+        }
+      }
+      // Rebuild mappings after adaptation
+      gameSpec.interactionMappings = buildInteractionMappings(
+        gameSpec.mechanics,
+        request.profile.inputMethods,
+      );
+    }
+
+    // Step 6: Generate assets
+    gameSpec.visualAssets = generateVisualAssets(genre, gameSpec.title);
+    gameSpec.audioAssets = generateAudioAssets(genre, gameSpec.title);
+
+    // Step 7: Build accessibility adaptations
+    gameSpec.accessibilityAdaptations = buildAccessibilityAdaptations(
+      gameSpec.mechanics,
+      request.profile,
+    );
+
+    // Step 8: Store the original player description
+    gameSpec.playerDescription = request.playerDescription;
+
+    return {
+      success: true,
+      gameSpec,
+      generationTimeMs: Date.now() - startTime,
+    };
+  }
+
+  /**
+   * Modify an existing game based on player feedback.
+   *
+   * Requirement 1.4 — regenerate within 15 seconds.
+   */
+  async modifyGame(
+    gameId: string,
+    modifications: string,
+    profile: AccessibilityProfile,
+  ): Promise<GameGenerationResult> {
+    const startTime = Date.now();
+
+    if (!modifications || modifications.trim().length === 0) {
+      return {
+        success: false,
+        generationTimeMs: Date.now() - startTime,
+        conflicts: [{ requirement1: 'modifications', requirement2: '', explanation: 'Modification description cannot be empty' }],
+      };
+    }
+
+    // Detect genre from modification text (or keep existing)
+    const genre = detectGenre(modifications);
+
+    try {
+      const gameSpec = await withTimeout(
+        this.llmProvider.generateGameSpec(modifications, genre),
+        MODIFICATION_TIMEOUT_MS,
+      );
+
+      // Override the ID to match the original game
+      gameSpec.id = gameId;
+
+      // Build interaction mappings
+      gameSpec.interactionMappings = buildInteractionMappings(
+        gameSpec.mechanics,
+        profile.inputMethods,
+      );
+
+      // Generate assets
+      gameSpec.visualAssets = generateVisualAssets(genre, gameSpec.title);
+      gameSpec.audioAssets = generateAudioAssets(genre, gameSpec.title);
+
+      // Build accessibility adaptations
+      gameSpec.accessibilityAdaptations = buildAccessibilityAdaptations(
+        gameSpec.mechanics,
+        profile,
+      );
+
+      gameSpec.playerDescription = modifications;
+
+      return {
+        success: true,
+        gameSpec,
+        generationTimeMs: Date.now() - startTime,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        generationTimeMs: Date.now() - startTime,
+        conflicts: [{
+          requirement1: 'modification',
+          requirement2: '',
+          explanation: error instanceof TimeoutError
+            ? 'Game modification exceeded 15-second time limit'
+            : `Game modification failed: ${(error as Error).message}`,
+        }],
+      };
+    }
+  }
+
+  /**
+   * Validate that all interactions in a GameSpec are achievable with the
+   * given input methods.
+   *
+   * Requirement 1.7 — every interaction mapping must reference an input
+   * method present in the player's declared input methods.
+   */
+  validateInteractions(spec: GameSpec, inputMethods: InputMethod[]): ValidationResult {
+    const invalidMappings: InvalidMapping[] = [];
+
+    // Check each mechanic has at least one mapping
+    for (const mechanic of spec.mechanics) {
+      const mapping = spec.interactionMappings.find((m) => m.mechanicId === mechanic.id);
+
+      if (!mapping) {
+        // No mapping exists — check if any compatible method exists
+        const compatible = findCompatibleInputMethod(
+          mechanic.requiredInputMethods,
+          mechanic.alternativeInputMethods,
+          inputMethods,
+        );
+        if (!compatible) {
+          invalidMappings.push({
+            mechanicId: mechanic.id,
+            inputMethod: mechanic.requiredInputMethods[0] ?? ('unknown' as InputMethod),
+            reason: `No compatible input method found for mechanic "${mechanic.name}". Required: ${mechanic.requiredInputMethods.join(', ')}. Player has: ${inputMethods.join(', ')}`,
+          });
+        }
+      } else if (!inputMethods.includes(mapping.inputMethod)) {
+        // Mapping exists but uses an input method the player doesn't have
+        invalidMappings.push({
+          mechanicId: mechanic.id,
+          inputMethod: mapping.inputMethod,
+          reason: `Interaction mapping uses "${mapping.inputMethod}" which is not in the player's input methods: ${inputMethods.join(', ')}`,
+        });
+      }
+    }
+
+    return {
+      valid: invalidMappings.length === 0,
+      invalidMappings,
+    };
+  }
+
+  /**
+   * Detect conflicting requirements in a player's game description.
+   *
+   * Requirement 1.8 — identify conflicts and ask the player to clarify.
+   */
+  detectConflicts(description: string): ConflictDetectionResult {
+    const lower = description.toLowerCase();
+    const conflicts: ConflictDescription[] = [];
+
+    for (const pair of CONFLICT_PAIRS) {
+      const has1 = pair.keywords1.some((kw) => lower.includes(kw));
+      const has2 = pair.keywords2.some((kw) => lower.includes(kw));
+
+      if (has1 && has2) {
+        const matched1 = pair.keywords1.find((kw) => lower.includes(kw))!;
+        const matched2 = pair.keywords2.find((kw) => lower.includes(kw))!;
+        conflicts.push({
+          requirement1: matched1,
+          requirement2: matched2,
+          explanation: pair.explanation,
+        });
+      }
+    }
+
+    return {
+      hasConflicts: conflicts.length > 0,
+      conflicts,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Timeout utility
+// ---------------------------------------------------------------------------
+
+class TimeoutError extends Error {
+  constructor(ms: number) {
+    super(`Operation timed out after ${ms}ms`);
+    this.name = 'TimeoutError';
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new TimeoutError(ms)), ms);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
