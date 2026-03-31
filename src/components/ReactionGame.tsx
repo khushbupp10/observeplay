@@ -23,20 +23,23 @@ const COLORS_HIGH_CONTRAST = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00
 const GAME_DURATION_MS = 30000;
 
 function getAdaptations(profile: AccessibilityProfile) {
+  const isRelaxedMode = profile.preferredPacing === 'slow' ||
+    profile.preferredInstructionFormat === 'text' ||
+    profile.hearingCapability === 'none';
   const targetSize = Math.max(60, profile.clickPrecision * 6, profile.minReadableTextSize * 3);
   const displayDurationMs =
-    profile.preferredPacing === 'slow' ? 3000
+    isRelaxedMode ? 0
     : profile.responseTimeMs > 800 ? 2200
     : 1500;
   const spawnIntervalMs =
-    profile.preferredPacing === 'slow' ? 2000
+    isRelaxedMode ? 0
     : profile.responseTimeMs > 800 ? 1500
     : 1000;
   const maxSimultaneous = Math.min(profile.maxSimultaneousElements, profile.preferredPacing === 'slow' ? 1 : 3);
   const highContrast = profile.minContrastRatio > 4.5;
   const audioEnabled = profile.hearingCapability !== 'none';
   const enhancedVisual = profile.hearingCapability === 'none' || profile.hearingCapability === 'partial';
-  return { targetSize, displayDurationMs, spawnIntervalMs, maxSimultaneous, highContrast, audioEnabled, enhancedVisual };
+  return { targetSize, displayDurationMs, spawnIntervalMs, maxSimultaneous, highContrast, audioEnabled, enhancedVisual, isRelaxedMode };
 }
 
 function createSoundEngine() {
@@ -104,9 +107,9 @@ export function ReactionGame({ profile, onGameComplete }: ReactionGameProps) {
     }
   }, [flashEffect]);
 
-  // Remove expired targets
+  // Remove expired targets (disabled in relaxed mode — targets stay until clicked)
   useEffect(() => {
-    if (gameState !== 'playing') return;
+    if (gameState !== 'playing' || adapt.isRelaxedMode || adapt.displayDurationMs === 0) return;
     const interval = setInterval(() => {
       const now = Date.now();
       setTargets(prev => {
@@ -123,7 +126,7 @@ export function ReactionGame({ profile, onGameComplete }: ReactionGameProps) {
       });
     }, 200);
     return () => clearInterval(interval);
-  }, [gameState, adapt.displayDurationMs, adapt.audioEnabled, adapt.enhancedVisual, addSoundEvent]);
+  }, [gameState, adapt.displayDurationMs, adapt.audioEnabled, adapt.enhancedVisual, adapt.isRelaxedMode, addSoundEvent]);
 
   const spawnTarget = useCallback(() => {
     setTargets(prev => {
@@ -145,20 +148,27 @@ export function ReactionGame({ profile, onGameComplete }: ReactionGameProps) {
     });
   }, [adapt.maxSimultaneous, adapt.audioEnabled, colors, addSoundEvent]);
 
+  const RELAXED_TARGET_COUNT = 10;
+
   const startGame = useCallback(() => {
     setScore(0); setMisses(0); setReactionTimes([]); setTargets([]);
-    setGameState('playing'); setTimeLeft(GAME_DURATION_MS);
+    setGameState('playing'); setTimeLeft(adapt.isRelaxedMode ? 0 : GAME_DURATION_MS);
     startTimeRef.current = Date.now(); nextIdRef.current = 0;
     setSoundEvents([]);
-    setStatusMessage('Game started! Hit targets by clicking or pressing number keys 1-6.');
-    spawnTimerRef.current = setInterval(spawnTarget, adapt.spawnIntervalMs);
-    tickTimerRef.current = setInterval(() => {
-      const elapsed = Date.now() - startTimeRef.current;
-      const left = Math.max(0, GAME_DURATION_MS - elapsed);
-      setTimeLeft(left);
-      if (left <= 0) setGameState('done');
-    }, 100);
-  }, [spawnTarget, adapt.spawnIntervalMs]);
+    if (adapt.isRelaxedMode) {
+      setStatusMessage(`Relaxed mode! Hit ${RELAXED_TARGET_COUNT} targets at your own pace. No time limit.`);
+      spawnTarget();
+    } else {
+      setStatusMessage('Game started! Hit targets by clicking or pressing number keys 1-6.');
+      spawnTimerRef.current = setInterval(spawnTarget, adapt.spawnIntervalMs);
+      tickTimerRef.current = setInterval(() => {
+        const elapsed = Date.now() - startTimeRef.current;
+        const left = Math.max(0, GAME_DURATION_MS - elapsed);
+        setTimeLeft(left);
+        if (left <= 0) setGameState('done');
+      }, 100);
+    }
+  }, [spawnTarget, adapt.spawnIntervalMs, adapt.isRelaxedMode]);
 
   useEffect(() => {
     if (gameState === 'done') {
@@ -187,14 +197,23 @@ export function ReactionGame({ profile, onGameComplete }: ReactionGameProps) {
       if (!t) return prev;
       const rt = Date.now() - t.spawnedAt;
       setReactionTimes(rts => [...rts, rt]);
-      setScore(s => s + 1);
+      setScore(s => {
+        const newScore = s + 1;
+        if (adapt.isRelaxedMode && newScore >= RELAXED_TARGET_COUNT) {
+          setGameState('done');
+        }
+        return newScore;
+      });
       if (adapt.audioEnabled) { soundRef.current?.hit(); }
       else { addSoundEvent(`🔊 Hit chime at position ${position + 1}`); }
       setFlashEffect('hit');
       setStatusMessage(`Hit at position ${position + 1}! Reaction: ${rt}ms.`);
+      if (adapt.isRelaxedMode) {
+        setTimeout(() => spawnTarget(), 500);
+      }
       return prev.filter(x => x.id !== t.id);
     });
-  }, [adapt.audioEnabled, addSoundEvent]);
+  }, [adapt.audioEnabled, adapt.isRelaxedMode, addSoundEvent, spawnTarget]);
 
   // Keyboard handler for number keys
   const handleGridKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -251,7 +270,7 @@ export function ReactionGame({ profile, onGameComplete }: ReactionGameProps) {
         <span>Hits: <strong>{score}</strong></span>
         <span>Misses: <strong>{misses}</strong></span>
         <span>Avg Reaction: <strong>{avgReaction}ms</strong></span>
-        <span>Time: <strong>{Math.ceil(timeLeft / 1000)}s</strong></span>
+        <span>Time: <strong>{adapt.isRelaxedMode ? 'No limit' : `${Math.ceil(timeLeft / 1000)}s`}</strong></span>
       </div>
 
       {gameState === 'idle' && (
@@ -371,7 +390,7 @@ export function ReactionGame({ profile, onGameComplete }: ReactionGameProps) {
         <summary style={{ cursor: 'pointer', fontWeight: 500 }}>Accessibility Adaptations Applied</summary>
         <ul style={{ marginTop: '8px', paddingLeft: '20px', lineHeight: 1.8 }}>
           <li>Grid: {GRID_COLS}×{GRID_ROWS} numbered positions (keyboard accessible via 1-6)</li>
-          <li>Target display duration: {adapt.displayDurationMs}ms</li>
+          <li>Target display duration: {adapt.isRelaxedMode ? 'No limit — targets stay until clicked' : `${adapt.displayDurationMs}ms`}</li>
           <li>Spawn interval: {adapt.spawnIntervalMs}ms</li>
           <li>Max simultaneous: {adapt.maxSimultaneous}</li>
           <li>High contrast: {adapt.highContrast ? 'Yes' : 'No'}</li>

@@ -24,10 +24,13 @@ function getAdaptations(profile: AccessibilityProfile) {
     : profile.responseTimeMs > 800 ? 2000
     : 1500;
   const holeSize = Math.max(100, profile.clickPrecision * 10, profile.minReadableTextSize * 5);
+  const isRelaxedMode = profile.preferredPacing === 'slow' ||
+    profile.preferredInstructionFormat === 'text' ||
+    profile.hearingCapability === 'none';
   const highContrast = profile.minContrastRatio > 4.5;
   const audioEnabled = profile.hearingCapability !== 'none';
   const enhancedVisual = profile.hearingCapability === 'none' || profile.hearingCapability === 'partial';
-  return { gridSize, moleDurationMs, spawnIntervalMs, holeSize, highContrast, audioEnabled, enhancedVisual };
+  return { gridSize, moleDurationMs: isRelaxedMode ? 0 : moleDurationMs, spawnIntervalMs: isRelaxedMode ? 0 : spawnIntervalMs, holeSize, highContrast, audioEnabled, enhancedVisual, isRelaxedMode };
 }
 
 function createSoundEngine() {
@@ -110,9 +113,9 @@ export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
     }
   }, [bounceHole]);
 
-  // Remove expired moles
+  // Remove expired moles (disabled in relaxed mode — moles stay until whacked)
   useEffect(() => {
-    if (gameState !== 'playing') return;
+    if (gameState !== 'playing' || adapt.isRelaxedMode || adapt.moleDurationMs === 0) return;
     const interval = setInterval(() => {
       const now = Date.now();
       setMoles(prev => {
@@ -129,7 +132,7 @@ export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
       });
     }, 200);
     return () => clearInterval(interval);
-  }, [gameState, adapt.moleDurationMs, adapt.audioEnabled, addSoundEvent]);
+  }, [gameState, adapt.moleDurationMs, adapt.audioEnabled, adapt.isRelaxedMode, addSoundEvent]);
 
   const spawnMole = useCallback(() => {
     setMoles(prev => {
@@ -145,20 +148,27 @@ export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
     });
   }, [totalHoles, adapt.audioEnabled, addSoundEvent]);
 
+  const RELAXED_MOLE_COUNT = 10;
+
   const startGame = useCallback(() => {
     setScore(0); setMisses(0); setMoles([]);
-    setGameState('playing'); setTimeLeft(GAME_DURATION_MS);
+    setGameState('playing'); setTimeLeft(adapt.isRelaxedMode ? 0 : GAME_DURATION_MS);
     startTimeRef.current = Date.now(); nextIdRef.current = 0;
     setFocusedHole(0); setSoundEvents([]);
-    setStatusMessage('Whack the moles! Use number keys or arrow keys to navigate and Enter to whack.');
-    spawnTimerRef.current = setInterval(spawnMole, adapt.spawnIntervalMs);
-    tickTimerRef.current = setInterval(() => {
-      const elapsed = Date.now() - startTimeRef.current;
-      const left = Math.max(0, GAME_DURATION_MS - elapsed);
-      setTimeLeft(left);
-      if (left <= 0) setGameState('done');
-    }, 100);
-  }, [spawnMole, adapt.spawnIntervalMs]);
+    if (adapt.isRelaxedMode) {
+      setStatusMessage(`Relaxed mode! Whack ${RELAXED_MOLE_COUNT} moles at your own pace. No time limit.`);
+      spawnMole();
+    } else {
+      setStatusMessage('Whack the moles! Use number keys or arrow keys to navigate and Enter to whack.');
+      spawnTimerRef.current = setInterval(spawnMole, adapt.spawnIntervalMs);
+      tickTimerRef.current = setInterval(() => {
+        const elapsed = Date.now() - startTimeRef.current;
+        const left = Math.max(0, GAME_DURATION_MS - elapsed);
+        setTimeLeft(left);
+        if (left <= 0) setGameState('done');
+      }, 100);
+    }
+  }, [spawnMole, adapt.spawnIntervalMs, adapt.isRelaxedMode]);
 
   useEffect(() => {
     if (gameState === 'done') {
@@ -188,14 +198,20 @@ export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
       setScore(s => {
         const newScore = s + 1;
         setStatusMessage(`Whacked mole in hole ${holeIdx + 1}! Score: ${newScore}.`);
+        if (adapt.isRelaxedMode && newScore >= RELAXED_MOLE_COUNT) {
+          setGameState('done');
+        }
         return newScore;
       });
       if (adapt.audioEnabled) { soundRef.current?.whack(); }
       else { addSoundEvent(`🔊 Whack at hole ${holeIdx + 1}`); }
       setFlashEffect('whack');
+      if (adapt.isRelaxedMode) {
+        setTimeout(() => spawnMole(), 500);
+      }
       return prev.filter(m => m.id !== mole.id);
     });
-  }, [adapt.audioEnabled, addSoundEvent]);
+  }, [adapt.audioEnabled, adapt.isRelaxedMode, addSoundEvent, spawnMole]);
 
   const handleGridKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (gameState !== 'playing') return;
@@ -264,7 +280,7 @@ export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
       <div style={{ display: 'flex', gap: '20px', marginBottom: '12px', fontSize: '15px', color: '#333', flexWrap: 'wrap' }}>
         <span>Score: <strong>{score}</strong></span>
         <span>Missed: <strong>{misses}</strong></span>
-        <span>Time: <strong>{Math.ceil(timeLeft / 1000)}s</strong></span>
+        <span>Time: <strong>{adapt.isRelaxedMode ? 'No limit' : `${Math.ceil(timeLeft / 1000)}s`}</strong></span>
       </div>
 
       {gameState === 'idle' && (
@@ -382,7 +398,7 @@ export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
         <summary style={{ cursor: 'pointer', fontWeight: 500 }}>Accessibility Adaptations Applied</summary>
         <ul style={{ marginTop: '8px', paddingLeft: '20px', lineHeight: 1.8 }}>
           <li>Grid: {adapt.gridSize}×{adapt.gridSize} ({totalHoles} holes)</li>
-          <li>Mole duration: {adapt.moleDurationMs}ms</li>
+          <li>Mole duration: {adapt.isRelaxedMode ? 'No limit — moles stay until whacked' : `${adapt.moleDurationMs}ms`}</li>
           <li>Spawn interval: {adapt.spawnIntervalMs}ms</li>
           <li>Hole size: {adapt.holeSize}px</li>
           <li>High contrast: {adapt.highContrast ? 'Yes' : 'No'}</li>
