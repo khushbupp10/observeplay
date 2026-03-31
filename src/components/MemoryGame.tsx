@@ -62,8 +62,11 @@ function getAdaptations(profile: AccessibilityProfile) {
       : 8;
   const cardSize = Math.max(80, profile.minReadableTextSize * 4, profile.clickPrecision * 8);
   const emojiSize = Math.max(32, profile.minReadableTextSize * 2);
-  const flipDelayMs = profile.preferredPacing === 'slow'
-    ? 2000
+  const isScreenReaderLikely = profile.preferredInstructionFormat === 'text' ||
+    profile.hearingCapability === 'none' ||
+    profile.preferredPacing === 'slow';
+  const flipDelayMs = isScreenReaderLikely
+    ? 0
     : profile.responseTimeMs > 800
       ? 1500
       : 1000;
@@ -74,7 +77,7 @@ function getAdaptations(profile: AccessibilityProfile) {
   const audioEnabled = profile.hearingCapability !== 'none';
   const enhancedVisual = profile.hearingCapability === 'none' || profile.hearingCapability === 'partial';
   const cols = 4;
-  return { pairCount, cardSize, emojiSize, flipDelayMs, highContrast, showLabels, cols, audioEnabled, enhancedVisual };
+  return { pairCount, cardSize, emojiSize, flipDelayMs, highContrast, showLabels, cols, audioEnabled, enhancedVisual, isScreenReaderLikely };
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +136,7 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [soundEvents, setSoundEvents] = useState<SoundEvent[]>([]);
   const soundEventIdRef = useRef(0);
+  const pendingMismatchRef = useRef<number[] | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const soundRef = useRef<ReturnType<typeof createSoundEngine> | null>(null);
@@ -187,6 +191,15 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
     const card = cards.find(c => c.id === cardId);
     if (!card || card.flipped || card.matched) return;
 
+    // Clear pending mismatch cards (screen-reader-friendly: no auto-timeout)
+    if (pendingMismatchRef.current) {
+      const [pid1, pid2] = pendingMismatchRef.current;
+      setCards(prev => prev.map(c =>
+        c.id === pid1 || c.id === pid2 ? { ...c, flipped: false } : c
+      ));
+      pendingMismatchRef.current = null;
+    }
+
     if (!gameStarted) { setGameStarted(true); setStartTime(Date.now()); }
 
     if (adaptations.audioEnabled) { soundRef.current?.flip(); }
@@ -195,7 +208,7 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
     const newFlipped = [...flippedIds, cardId];
     setFlippedIds(newFlipped);
     setCards(prev => prev.map(c => c.id === cardId ? { ...c, flipped: true } : c));
-    setStatusMessage(`Card ${cardId + 1} flipped: ${card.label}`);
+    setStatusMessage(`Card ${cardId + 1} flipped: ${card.label}. ${flippedIds.length === 0 ? 'Find the matching card.' : ''}`);
 
     if (newFlipped.length === 2) {
       setMoves(m => m + 1);
@@ -223,14 +236,22 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
         if (adaptations.audioEnabled) { setTimeout(() => soundRef.current?.mismatch(), 300); }
         else { addSoundEvent('🔊 Wrong buzz'); }
         setFlashEffect('mismatch');
-        setStatusMessage(`No match. Card ${cards.findIndex(c => c.id === first) + 1} was ${card1.label}, Card ${cards.findIndex(c => c.id === cardId) + 1} was ${card2.label}. Cards flipped back.`);
-        setTimeout(() => {
-          setCards(prev => prev.map(c =>
-            c.id === first || c.id === cardId ? { ...c, flipped: false } : c
-          ));
+        setStatusMessage(`No match. Card ${cards.findIndex(c => c.id === first) + 1} was ${card1.label}, Card ${cards.findIndex(c => c.id === cardId) + 1} was ${card2.label}. ${adaptations.flipDelayMs === 0 ? 'Press any card to continue.' : 'Cards flipping back.'}`);
+        if (adaptations.flipDelayMs === 0) {
+          // No auto-timeout: cards stay visible until next interaction
           setFlippedIds([]);
           setIsProcessing(false);
-        }, adaptations.flipDelayMs);
+          pendingMismatchRef.current = [first, cardId];
+        } else {
+          setTimeout(() => {
+            setCards(prev => prev.map(c =>
+              c.id === first || c.id === cardId ? { ...c, flipped: false } : c
+            ));
+            setFlippedIds([]);
+            setIsProcessing(false);
+            setStatusMessage('Cards flipped back. Choose another card.');
+          }, adaptations.flipDelayMs);
+        }
       }
     }
   }, [cards, flippedIds, isProcessing, gameComplete, gameStarted, adaptations.flipDelayMs, adaptations.audioEnabled, addSoundEvent]);
@@ -467,7 +488,7 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
         <ul style={{ marginTop: '8px', paddingLeft: '20px', lineHeight: 1.8 }}>
           <li>Pairs: {adaptations.pairCount} (based on cognitive preferences)</li>
           <li>Card size: {adaptations.cardSize}px (based on text size and click precision)</li>
-          <li>Flip delay: {adaptations.flipDelayMs}ms (based on response time and pacing)</li>
+          <li>Flip delay: {adaptations.flipDelayMs === 0 ? 'None — cards stay visible until you choose the next card (screen reader friendly)' : `${adaptations.flipDelayMs}ms (based on response time and pacing)`}</li>
           <li>High contrast: {adaptations.highContrast ? 'Yes' : 'No'}</li>
           <li>Text labels: {adaptations.showLabels ? 'Shown' : 'Hidden'}</li>
           <li>Audio feedback: {adaptations.audioEnabled ? 'Enabled' : 'Disabled — using visual flash feedback instead'}</li>
