@@ -13,7 +13,8 @@ import { WhackAMole } from '../components/WhackAMole';
 import type { ConsentCategory } from '../types/common';
 import type { ConsentForm as ConsentFormData } from '../types/consent';
 import type { AccessibilityProfile } from '../types/player';
-import type { OnboardingObservations } from '../services/profile-learner';
+import { buildProfileFromOnboardingObservations } from '../services/profile-learner';
+import { clearAdaptationTelemetry } from '../utils/adaptation-telemetry';
 
 // Apply accessibility profile settings to the document body as CSS classes
 function applyProfileToBody(profile: AccessibilityProfile) {
@@ -96,6 +97,14 @@ interface GameCardInfo {
 }
 
 const GAME_CARDS: GameCardInfo[] = [
+  {
+    view: 'play',
+    emoji: '🤖',
+    title: 'AI Game Generator',
+    description: 'Describe the game you want in plain language. We generate a playable experience tailored to your accessibility profile.',
+    difficulty: 'Featured',
+    difficultyColor: '#5c6bc0',
+  },
   { view: 'memory', emoji: '🃏', title: 'Memory Match', description: 'Find matching pairs of cards. Tests memory and pattern recognition.', difficulty: 'Easy', difficultyColor: '#2e7d32' },
   { view: 'reaction', emoji: '⚡', title: 'Reaction Speed', description: 'Click colored circles before they vanish. Tests reflexes and precision.', difficulty: 'Medium', difficultyColor: '#e65100' },
   { view: 'simon', emoji: '🎵', title: 'Simon Says', description: 'Watch and repeat growing color sequences. Tests memory and focus.', difficulty: 'Medium', difficultyColor: '#e65100' },
@@ -119,30 +128,8 @@ export default function Home() {
     setConsents((prev) => ({ ...prev, [category]: granted }));
   };
 
-  const handleGenerateProfile = async (observations: OnboardingObservations): Promise<AccessibilityProfile> => {
-    const profile: AccessibilityProfile = {
-      playerId: 'demo-player',
-      version: 1,
-      lastUpdated: Date.now(),
-      inputMethods: observations.detectedInputMethods.length > 0 ? observations.detectedInputMethods : ['keyboard'],
-      responseTimeMs: observations.responseTimeSamples.length > 0 ? Math.round(observations.responseTimeSamples.reduce((a, b) => a + b, 0) / observations.responseTimeSamples.length) : 500,
-      inputAccuracy: observations.inputAccuracySamples.length > 0 ? observations.inputAccuracySamples[0] : 0.85,
-      minReadableTextSize: observations.visualTrackingResults.minReadableTextSize,
-      minContrastRatio: observations.visualTrackingResults.minContrastRatio,
-      colorBlindnessType: null,
-      visualFieldRestriction: null,
-      hearingCapability: observations.audioResponsivenessResults.hearingCapability,
-      preferredAudioChannel: observations.audioResponsivenessResults.preferredAudioChannel,
-      reachableScreenZone: observations.motorAssessment.reachableScreenZone,
-      clickPrecision: observations.motorAssessment.clickPrecision,
-      holdDuration: observations.motorAssessment.holdDuration,
-      preferredPacing: observations.cognitiveAssessment.preferredPacing,
-      maxSimultaneousElements: observations.cognitiveAssessment.maxSimultaneousElements,
-      preferredInstructionFormat: observations.cognitiveAssessment.preferredInstructionFormat,
-      learnedPreferences: {},
-      manualOverrides: {},
-    };
-    return profile;
+  const handleGenerateProfile = async (observations: Parameters<typeof buildProfileFromOnboardingObservations>[0]): Promise<AccessibilityProfile> => {
+    return buildProfileFromOnboardingObservations(observations, 'demo-player');
   };
 
   const handleSaveProfile = async (profile: AccessibilityProfile) => {
@@ -233,23 +220,6 @@ export default function Home() {
               {GAME_CARDS.map(card => (
                 <GameCard key={card.view} card={card} onPlay={() => setView(card.view)} />
               ))}
-            </div>
-          </section>
-
-          {/* AI Game Generator - Coming Soon */}
-          <section aria-labelledby="ai-gen-heading" style={{ padding: '0 24px 48px', maxWidth: '960px', margin: '0 auto', width: '100%' }}>
-            <div style={{
-              width: '100%', padding: '24px', textAlign: 'left',
-              border: '2px dashed #667eea', borderRadius: '12px',
-              backgroundColor: '#f5f3ff',
-              display: 'flex', flexDirection: 'column', gap: '4px',
-            }}>
-              <span style={{ fontSize: '20px', fontWeight: 700, color: '#4a3d8f' }}>
-                🤖 AI Game Generator <span style={{ fontSize: '13px', fontWeight: 500, backgroundColor: '#667eea', color: '#fff', padding: '2px 8px', borderRadius: '10px', marginLeft: '8px' }}>Coming Soon</span>
-              </span>
-              <span style={{ fontSize: '14px', color: '#555', lineHeight: 1.4 }}>
-                Connect an OpenAI API key to generate custom games from natural language descriptions tailored to your accessibility profile.
-              </span>
             </div>
           </section>
 
@@ -428,7 +398,10 @@ export default function Home() {
                 player: { demo: true },
                 gameHistory: [],
               })}
-              onDeleteAccount={async () => { setView('home'); }}
+              onDeleteAccount={async () => {
+                clearAdaptationTelemetry();
+                setView('home');
+              }}
             />
             </div>
           )}

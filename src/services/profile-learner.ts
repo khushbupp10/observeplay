@@ -193,49 +193,8 @@ export class ProfileLearnerService {
   async generateInitialProfile(sessionData: OnboardingData): Promise<AccessibilityProfile> {
     const { playerId, observations } = sessionData;
 
-    // Derive response time from samples (deterministic: sorted median)
-    const responseTimeMs = computeMedian(observations.responseTimeSamples);
-
-    // Derive input accuracy from samples (deterministic: sorted median)
-    const inputAccuracy = clamp(computeMedian(observations.inputAccuracySamples), 0, 1);
-
-    // Derive input methods — deduplicate and sort for determinism
-    const inputMethods = deduplicateAndSort(observations.detectedInputMethods);
-
-    const profile: AccessibilityProfile = {
-      playerId,
-      version: 1,
-      lastUpdated: sessionData.completedAt,
-
-      // Input capabilities
-      inputMethods: inputMethods.length > 0 ? inputMethods : ['keyboard'],
-      responseTimeMs: responseTimeMs > 0 ? responseTimeMs : 500,
-      inputAccuracy: inputAccuracy > 0 ? inputAccuracy : 0.8,
-
-      // Visual capabilities
-      minReadableTextSize: observations.visualTrackingResults.minReadableTextSize,
-      minContrastRatio: observations.visualTrackingResults.minContrastRatio,
-      colorBlindnessType: observations.visualTrackingResults.colorBlindnessType,
-      visualFieldRestriction: observations.visualTrackingResults.visualFieldRestriction,
-
-      // Audio capabilities
-      hearingCapability: observations.audioResponsivenessResults.hearingCapability,
-      preferredAudioChannel: observations.audioResponsivenessResults.preferredAudioChannel,
-
-      // Motor capabilities
-      reachableScreenZone: observations.motorAssessment.reachableScreenZone,
-      clickPrecision: observations.motorAssessment.clickPrecision,
-      holdDuration: observations.motorAssessment.holdDuration,
-
-      // Cognitive preferences
-      preferredPacing: observations.cognitiveAssessment.preferredPacing,
-      maxSimultaneousElements: observations.cognitiveAssessment.maxSimultaneousElements,
-      preferredInstructionFormat: observations.cognitiveAssessment.preferredInstructionFormat,
-
-      // Learned preferences — empty initially
-      learnedPreferences: {},
-      manualOverrides: {},
-    };
+    const profile = buildProfileFromOnboardingObservations(observations, playerId);
+    profile.lastUpdated = sessionData.completedAt;
 
     // Persist the profile
     await this.deps.playerRepo.upsertProfile(profile);
@@ -579,4 +538,47 @@ export function clamp(value: number, min: number, max: number): number {
  */
 export function deduplicateAndSort(methods: InputMethod[]): InputMethod[] {
   return [...new Set(methods)].sort();
+}
+
+/**
+ * Build an accessibility profile from onboarding observations without persisting.
+ * Matches {@link ProfileLearnerService.generateInitialProfile} logic (median, sorted
+ * input methods, safe defaults) for client-side onboarding flows.
+ */
+export function buildProfileFromOnboardingObservations(
+  observations: OnboardingObservations,
+  playerId: string,
+): AccessibilityProfile {
+  const responseTimeMs = computeMedian(observations.responseTimeSamples);
+  const inputAccuracy = clamp(computeMedian(observations.inputAccuracySamples), 0, 1);
+  const inputMethods = deduplicateAndSort(observations.detectedInputMethods);
+
+  return {
+    playerId,
+    version: 1,
+    lastUpdated: Date.now(),
+
+    inputMethods: inputMethods.length > 0 ? inputMethods : ['keyboard'],
+    responseTimeMs: responseTimeMs > 0 ? responseTimeMs : 500,
+    inputAccuracy: inputAccuracy > 0 ? inputAccuracy : 0.8,
+
+    minReadableTextSize: observations.visualTrackingResults.minReadableTextSize,
+    minContrastRatio: observations.visualTrackingResults.minContrastRatio,
+    colorBlindnessType: observations.visualTrackingResults.colorBlindnessType,
+    visualFieldRestriction: observations.visualTrackingResults.visualFieldRestriction,
+
+    hearingCapability: observations.audioResponsivenessResults.hearingCapability,
+    preferredAudioChannel: observations.audioResponsivenessResults.preferredAudioChannel,
+
+    reachableScreenZone: observations.motorAssessment.reachableScreenZone,
+    clickPrecision: observations.motorAssessment.clickPrecision,
+    holdDuration: observations.motorAssessment.holdDuration,
+
+    preferredPacing: observations.cognitiveAssessment.preferredPacing,
+    maxSimultaneousElements: observations.cognitiveAssessment.maxSimultaneousElements,
+    preferredInstructionFormat: observations.cognitiveAssessment.preferredInstructionFormat,
+
+    learnedPreferences: {},
+    manualOverrides: {},
+  };
 }

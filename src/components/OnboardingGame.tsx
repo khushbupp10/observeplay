@@ -3,10 +3,11 @@
 import { useState, useCallback, useRef, useEffect, useId } from 'react';
 import type { InputMethod } from '../types/common';
 import type { AccessibilityProfile } from '../types/player';
-import type {
-  OnboardingObservations,
-  VisualTrackingResult,
-  AudioResponsivenessResult,
+import {
+  computeMedian,
+  type OnboardingObservations,
+  type VisualTrackingResult,
+  type AudioResponsivenessResult,
 } from '../services/profile-learner';
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,11 @@ interface AudioAssessmentState {
   phase: 'testing' | 'done';
 }
 
+interface OnboardingPreferences {
+  skipVisualAssessment: boolean;
+  skipAudioAssessment: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -95,6 +101,10 @@ export function OnboardingGame({ onGenerateProfile, onSaveProfile }: OnboardingG
   const [profileOverrides, setProfileOverrides] = useState<Partial<AccessibilityProfile>>({});
   const [statusMessage, setStatusMessage] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [assessmentPrefs, setAssessmentPrefs] = useState<OnboardingPreferences>({
+    skipVisualAssessment: false,
+    skipAudioAssessment: false,
+  });
 
   // Input assessment state
   const [inputState, setInputState] = useState<InputAssessmentState>(() => createInputState());
@@ -208,11 +218,17 @@ export function OnboardingGame({ onGenerateProfile, onSaveProfile }: OnboardingG
 
   // ── Step completion & profile generation ──────────────────────
 
-  const handleCompleteOnboarding = useCallback(async () => {
+  const handleCompleteOnboarding = useCallback(async (
+    options?: Partial<OnboardingPreferences>,
+  ) => {
     setIsProcessing(true);
     announce('Generating your accessibility profile…');
 
-    const observations = buildObservations(inputState, visualState, audioState);
+    const effectivePrefs: OnboardingPreferences = {
+      ...assessmentPrefs,
+      ...options,
+    };
+    const observations = buildObservations(inputState, visualState, audioState, effectivePrefs);
     try {
       const profile = await onGenerateProfile(observations);
       setGeneratedProfile(profile);
@@ -224,13 +240,76 @@ export function OnboardingGame({ onGenerateProfile, onSaveProfile }: OnboardingG
     } finally {
       setIsProcessing(false);
     }
-  }, [inputState, visualState, audioState, onGenerateProfile, goToStep, announce]);
+  }, [inputState, visualState, audioState, assessmentPrefs, onGenerateProfile, goToStep, announce]);
+
+  const handleStartAssessment = useCallback(() => {
+    goToStep('input');
+    const skipBits: string[] = [];
+    if (assessmentPrefs.skipVisualAssessment) skipBits.push('visual');
+    if (assessmentPrefs.skipAudioAssessment) skipBits.push('audio');
+    announce(
+      skipBits.length > 0
+        ? `Starting input detection. ${skipBits.join(' and ')} assessment${skipBits.length > 1 ? 's' : ''} will be skipped.`
+        : 'Starting input detection. Activate the targets as they appear.',
+    );
+  }, [goToStep, assessmentPrefs, announce]);
+
+  const handleInputComplete = useCallback(() => {
+    if (assessmentPrefs.skipVisualAssessment && assessmentPrefs.skipAudioAssessment) {
+      announce('Input detection complete. Skipping visual and audio checks as requested.');
+      handleCompleteOnboarding({
+        skipVisualAssessment: true,
+        skipAudioAssessment: true,
+      });
+      return;
+    }
+    if (assessmentPrefs.skipVisualAssessment) {
+      goToStep('audio');
+      announce('Input detection complete. Visual assessment skipped; starting audio assessment.');
+      return;
+    }
+    goToStep('visual');
+    announce('Input detection complete. Starting visual assessment.');
+  }, [assessmentPrefs, goToStep, announce, handleCompleteOnboarding]);
+
+  const handleSkipVisualAssessment = useCallback(() => {
+    setAssessmentPrefs((prev) => ({ ...prev, skipVisualAssessment: true }));
+    goToStep('audio');
+    announce('Visual assessment skipped. Starting audio assessment.');
+  }, [goToStep, announce]);
+
+  const handleSkipAudioAssessment = useCallback(() => {
+    setAssessmentPrefs((prev) => ({ ...prev, skipAudioAssessment: true }));
+    announce('Audio assessment skipped. Generating your profile now.');
+    handleCompleteOnboarding({
+      skipAudioAssessment: true,
+      skipVisualAssessment:
+        assessmentPrefs.skipVisualAssessment ||
+        visualState.currentSizeIndex < TEXT_SIZES.length ||
+        visualState.currentContrastIndex < CONTRAST_LEVELS.length,
+    });
+  }, [announce, handleCompleteOnboarding, assessmentPrefs.skipVisualAssessment, visualState.currentSizeIndex, visualState.currentContrastIndex]);
 
   const handleConfirmProfile = useCallback(async () => {
     if (!generatedProfile) return;
     setIsProcessing(true);
     announce('Saving your profile…');
-    const finalProfile = { ...generatedProfile, ...profileOverrides };
+    const manualOverrides: Record<string, unknown> = {};
+    for (const key of Object.keys(profileOverrides) as (keyof AccessibilityProfile)[]) {
+      if (key === 'learnedPreferences' || key === 'manualOverrides') {
+        continue;
+      }
+      const v = profileOverrides[key];
+      if (v !== undefined) {
+        manualOverrides[key as string] = v;
+      }
+    }
+    const finalProfile: AccessibilityProfile = {
+      ...generatedProfile,
+      ...profileOverrides,
+      manualOverrides: { ...generatedProfile.manualOverrides, ...manualOverrides },
+      lastUpdated: Date.now(),
+    };
     try {
       await onSaveProfile(finalProfile);
       announce('Profile saved successfully! You are ready to play.');
@@ -290,7 +369,11 @@ export function OnboardingGame({ onGenerateProfile, onSaveProfile }: OnboardingG
       {/* Step content */}
       <section aria-label={STEP_LABELS[currentStep]}>
         {currentStep === 'welcome' && (
-          <WelcomeStep onStart={() => { goToStep('input'); announce('Starting input detection. Activate the targets as they appear.'); }} />
+          <WelcomeStep
+            preferences={assessmentPrefs}
+            onPreferencesChange={setAssessmentPrefs}
+            onStart={handleStartAssessment}
+          />
         )}
         {currentStep === 'input' && (
           <InputStep
@@ -298,7 +381,7 @@ export function OnboardingGame({ onGenerateProfile, onSaveProfile }: OnboardingG
             onTargetActivation={handleTargetActivation}
             onTargetMiss={handleTargetMiss}
             onRecordInput={recordInputMethod}
-            onComplete={() => { goToStep('visual'); announce('Input detection complete. Starting visual assessment.'); }}
+            onComplete={handleInputComplete}
           />
         )}
         {currentStep === 'visual' && (
@@ -306,6 +389,7 @@ export function OnboardingGame({ onGenerateProfile, onSaveProfile }: OnboardingG
             state={visualState}
             onResponse={handleVisualResponse}
             onComplete={() => { goToStep('audio'); announce('Visual assessment complete. Starting audio assessment.'); }}
+            onSkip={handleSkipVisualAssessment}
           />
         )}
         {currentStep === 'audio' && (
@@ -314,6 +398,7 @@ export function OnboardingGame({ onGenerateProfile, onSaveProfile }: OnboardingG
             onResponse={handleAudioResponse}
             onComplete={handleCompleteOnboarding}
             isProcessing={isProcessing}
+            onSkip={handleSkipAudioAssessment}
           />
         )}
         {currentStep === 'results' && generatedProfile && (
@@ -334,7 +419,13 @@ export function OnboardingGame({ onGenerateProfile, onSaveProfile }: OnboardingG
 // Step Components
 // ---------------------------------------------------------------------------
 
-function WelcomeStep({ onStart }: { onStart: () => void }) {
+interface WelcomeStepProps {
+  preferences: OnboardingPreferences;
+  onPreferencesChange: (prefs: OnboardingPreferences) => void;
+  onStart: () => void;
+}
+
+function WelcomeStep({ preferences, onPreferencesChange, onStart }: WelcomeStepProps) {
   return (
     <div>
       <h2>Welcome to the Accessibility Assessment</h2>
@@ -353,6 +444,35 @@ function WelcomeStep({ onStart }: { onStart: () => void }) {
         <li>Audio assessment — respond to sounds at different frequencies</li>
         <li>Review — see your generated profile and make adjustments</li>
       </ul>
+      <fieldset style={preferenceFieldsetStyle}>
+        <legend style={preferenceLegendStyle}>Optional quick-start preferences</legend>
+        <label style={preferenceLabelStyle}>
+          <input
+            type="checkbox"
+            checked={preferences.skipVisualAssessment}
+            onChange={(e) =>
+              onPreferencesChange({
+                ...preferences,
+                skipVisualAssessment: e.target.checked,
+              })
+            }
+          />
+          <span> I am blind / use a screen reader — skip visual assessment</span>
+        </label>
+        <label style={preferenceLabelStyle}>
+          <input
+            type="checkbox"
+            checked={preferences.skipAudioAssessment}
+            onChange={(e) =>
+              onPreferencesChange({
+                ...preferences,
+                skipAudioAssessment: e.target.checked,
+              })
+            }
+          />
+          <span> I am Deaf / hard of hearing — skip audio assessment</span>
+        </label>
+      </fieldset>
       <button type="button" onClick={onStart} style={primaryButtonStyle}>
         Start Assessment
       </button>
@@ -459,8 +579,8 @@ function InputStep({ state, onTargetActivation, onTargetMiss, onRecordInput, onC
             Input detection complete.
             {state.responseTimes.length > 0 && (
               <span>
-                {' '}Average response time:{' '}
-                {Math.round(state.responseTimes.reduce((a, b) => a + b, 0) / state.responseTimes.length)}ms.
+                {' '}Median response time:{' '}
+                {Math.round(computeMedian(state.responseTimes))}ms.
               </span>
             )}
           </p>
@@ -481,9 +601,10 @@ interface VisualStepProps {
   state: VisualAssessmentState;
   onResponse: (canSee: boolean) => void;
   onComplete: () => void;
+  onSkip: () => void;
 }
 
-function VisualStep({ state, onResponse, onComplete }: VisualStepProps) {
+function VisualStep({ state, onResponse, onComplete, onSkip }: VisualStepProps) {
   const sizesDone = state.currentSizeIndex >= TEXT_SIZES.length;
   const contrastsDone = state.currentContrastIndex >= CONTRAST_LEVELS.length;
   const allDone = sizesDone && contrastsDone;
@@ -521,6 +642,9 @@ function VisualStep({ state, onResponse, onComplete }: VisualStepProps) {
           <button type="button" onClick={() => onResponse(false)} style={secondaryButtonStyle}>
             No, it is too small
           </button>
+          <button type="button" onClick={onSkip} style={tertiaryButtonStyle}>
+            Skip visual assessment
+          </button>
         </div>
       </div>
     );
@@ -546,6 +670,9 @@ function VisualStep({ state, onResponse, onComplete }: VisualStepProps) {
           </button>
           <button type="button" onClick={() => onResponse(false)} style={secondaryButtonStyle}>
             No, it is hard to read
+          </button>
+          <button type="button" onClick={onSkip} style={tertiaryButtonStyle}>
+            Skip visual assessment
           </button>
         </div>
       </div>
@@ -573,9 +700,10 @@ interface AudioStepProps {
   onResponse: (canHear: boolean) => void;
   onComplete: () => void;
   isProcessing: boolean;
+  onSkip: () => void;
 }
 
-function AudioStep({ state, onResponse, onComplete, isProcessing }: AudioStepProps) {
+function AudioStep({ state, onResponse, onComplete, isProcessing, onSkip }: AudioStepProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
 
@@ -647,6 +775,9 @@ function AudioStep({ state, onResponse, onComplete, isProcessing }: AudioStepPro
         <button type="button" onClick={() => onResponse(false)} style={secondaryButtonStyle}>
           No, I could not hear it
         </button>
+        <button type="button" onClick={onSkip} style={tertiaryButtonStyle}>
+          Skip audio assessment
+        </button>
       </div>
     </div>
   );
@@ -676,6 +807,14 @@ function ResultsStep({ profile, overrides, onOverrideChange, onConfirm, isProces
     [overrides, onOverrideChange],
   );
 
+  const audioVolumePercent = (() => {
+    const v = merged.learnedPreferences?.audioVolume;
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      return Math.round(Math.max(0, Math.min(1, v)) * 100);
+    }
+    return 70;
+  })();
+
   return (
     <div>
       <h2 id={headingId}>Your Accessibility Profile</h2>
@@ -692,7 +831,7 @@ function ResultsStep({ profile, overrides, onOverrideChange, onConfirm, isProces
           fieldKey="inputMethods"
         />
         <ProfileNumberField
-          label="Average Response Time (ms)"
+          label="Median response time (ms)"
           value={merged.responseTimeMs}
           onChange={(v) => handleFieldChange('responseTimeMs', v)}
           min={50}
@@ -734,6 +873,19 @@ function ResultsStep({ profile, overrides, onOverrideChange, onConfirm, isProces
             { value: 'none', label: 'No hearing' },
           ]}
           onChange={(v) => handleFieldChange('hearingCapability', v)}
+        />
+        <ProfileNumberField
+          label="Audio volume (all game sounds)"
+          value={audioVolumePercent}
+          onChange={(v) =>
+            handleFieldChange('learnedPreferences', {
+              ...merged.learnedPreferences,
+              audioVolume: Math.max(0, Math.min(1, v / 100)),
+            })
+          }
+          min={0}
+          max={100}
+          suffix="%"
         />
       </div>
 
@@ -875,11 +1027,21 @@ function buildObservations(
   inputState: InputAssessmentState,
   visualState: VisualAssessmentState,
   audioState: AudioAssessmentState,
+  prefs: OnboardingPreferences = {
+    skipVisualAssessment: false,
+    skipAudioAssessment: false,
+  },
 ): OnboardingObservations {
   // Determine minimum readable text size from visual results
-  const minReadableTextSize = deriveMinTextSize(visualState.sizeResults);
-  const minContrastRatio = deriveMinContrastRatio(visualState.contrastResults);
-  const hearingCapability = deriveHearingCapability(audioState.results);
+  const minReadableTextSize = prefs.skipVisualAssessment
+    ? 24
+    : deriveMinTextSize(visualState.sizeResults);
+  const minContrastRatio = prefs.skipVisualAssessment
+    ? 7.0
+    : deriveMinContrastRatio(visualState.contrastResults);
+  const hearingCapability = prefs.skipAudioAssessment
+    ? 'none'
+    : deriveHearingCapability(audioState.results);
 
   return {
     detectedInputMethods: [...inputState.detectedMethods] as InputMethod[],
@@ -906,7 +1068,7 @@ function buildObservations(
     cognitiveAssessment: {
       preferredPacing: 'moderate',
       maxSimultaneousElements: 5,
-      preferredInstructionFormat: 'multimodal',
+      preferredInstructionFormat: prefs.skipVisualAssessment ? 'audio' : 'multimodal',
     },
   };
 }
@@ -1010,6 +1172,41 @@ const secondaryButtonStyle: React.CSSProperties = {
   cursor: 'pointer',
   minWidth: '44px',
   minHeight: '44px',
+};
+
+const tertiaryButtonStyle: React.CSSProperties = {
+  padding: '12px 24px',
+  fontSize: '16px',
+  fontWeight: 500,
+  color: '#1a73e8',
+  backgroundColor: '#f5f9ff',
+  border: '1px solid #90caf9',
+  borderRadius: '6px',
+  cursor: 'pointer',
+  minWidth: '44px',
+  minHeight: '44px',
+};
+
+const preferenceFieldsetStyle: React.CSSProperties = {
+  marginBottom: '18px',
+  border: '1px solid #dbe6f9',
+  borderRadius: '8px',
+  backgroundColor: '#f7fbff',
+  padding: '12px 14px',
+};
+
+const preferenceLegendStyle: React.CSSProperties = {
+  fontSize: '14px',
+  fontWeight: 600,
+  color: '#1a73e8',
+  padding: '0 6px',
+};
+
+const preferenceLabelStyle: React.CSSProperties = {
+  display: 'block',
+  fontSize: '14px',
+  color: '#333',
+  marginBottom: '8px',
 };
 
 const backButtonStyle: React.CSSProperties = {

@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useId } from 'react';
 import type { AccessibilityProfile } from '../types/player';
+import { getProfileAudioVolume } from '../utils/audio-volume';
 
 export interface SimonGameProps {
   profile: AccessibilityProfile;
@@ -42,7 +43,7 @@ function getAdaptations(profile: AccessibilityProfile) {
   return { flashDurationMs, pauseBetweenMs, maxSequence, quadrantSize, highContrast, audioEnabled, enhancedVisual, showLabels };
 }
 
-function createSoundEngine() {
+function createSoundEngine(masterVolume = 1) {
   let ctx: AudioContext | null = null;
   function getCtx(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -53,7 +54,7 @@ function createSoundEngine() {
     const c = getCtx(); if (!c) return;
     const osc = c.createOscillator(); const gain = c.createGain();
     osc.type = 'sine'; osc.frequency.setValueAtTime(freq, c.currentTime);
-    gain.gain.setValueAtTime(vol, c.currentTime);
+    gain.gain.setValueAtTime(Math.max(0, Math.min(1, vol * masterVolume)), c.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur / 1000);
     osc.connect(gain); gain.connect(c.destination); osc.start(); osc.stop(c.currentTime + dur / 1000);
   }
@@ -69,6 +70,7 @@ interface SoundEvent { id: number; text: string; }
 
 export function SimonGame({ profile, onGameComplete }: SimonGameProps) {
   const adapt = getAdaptations(profile);
+  const audioVolume = getProfileAudioVolume(profile);
   const quads = adapt.highContrast ? HC_QUADRANTS : QUADRANTS;
 
   const [sequence, setSequence] = useState<number[]>([]);
@@ -94,9 +96,9 @@ export function SimonGame({ profile, onGameComplete }: SimonGameProps) {
   }, []);
 
   useEffect(() => {
-    if (adapt.audioEnabled) soundRef.current = createSoundEngine();
+    if (adapt.audioEnabled) soundRef.current = createSoundEngine(audioVolume);
     return () => { soundRef.current?.cleanup(); soundRef.current = null; };
-  }, [adapt.audioEnabled]);
+  }, [adapt.audioEnabled, audioVolume]);
 
   useEffect(() => {
     if (flashEffect) {
@@ -341,6 +343,7 @@ export function SimonGame({ profile, onGameComplete }: SimonGameProps) {
           <li>Quadrant size: {adapt.quadrantSize}px</li>
           <li>Labels: {adapt.showLabels ? 'Shown' : 'Hidden'}</li>
           <li>Audio: {adapt.audioEnabled ? 'Enabled' : 'Disabled — visual patterns active'}</li>
+          <li>Audio volume: {Math.round(audioVolume * 100)}%</li>
           <li>Full sequence pre-announced for screen readers</li>
         </ul>
       </details>

@@ -2,6 +2,10 @@
 
 import { useState, useCallback, useRef, useEffect, useId } from 'react';
 import type { DataDashboard as DataDashboardData, PlayerDataExport } from '../types/consent';
+import {
+  listAdaptationTelemetry,
+  type AdaptationTelemetryEntry,
+} from '../utils/adaptation-telemetry';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -49,6 +53,64 @@ const CATEGORY_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+
+function LocalAdaptationEvents() {
+  const [entries, setEntries] = useState<AdaptationTelemetryEntry[]>([]);
+  useEffect(() => {
+    setEntries(listAdaptationTelemetry(40));
+  }, []);
+
+  if (entries.length === 0) {
+    return (
+      <p style={{ fontSize: '14px', color: '#666', marginBottom: '20px' }}>
+        No adaptation session log on this device yet. Play a game (for example Memory Match) to see profile-driven changes recorded here.
+      </p>
+    );
+  }
+
+  return (
+    <div style={{ marginBottom: '28px' }}>
+      <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>Recent adaptation events (this device)</h3>
+      <p style={{ fontSize: '14px', color: '#555', marginBottom: '12px' }}>
+        Stored locally in your browser for post-session review. Export your data download may not include this list unless we add it to the server export later.
+      </p>
+      <ul
+        style={{
+          listStyle: 'none',
+          padding: 0,
+          margin: 0,
+          maxHeight: '280px',
+          overflowY: 'auto',
+          border: '1px solid #ddd',
+          borderRadius: '8px',
+          backgroundColor: '#fafafa',
+        }}
+      >
+        {entries.map((e) => (
+          <li
+            key={e.id}
+            style={{
+              padding: '10px 12px',
+              borderBottom: '1px solid #eee',
+              fontSize: '13px',
+              color: '#333',
+            }}
+          >
+            <span style={{ color: '#666', fontSize: '12px' }}>
+              {new Date(e.timestamp).toLocaleString()}
+            </span>
+            {' · '}
+            <span style={{ fontWeight: 600 }}>{e.game}</span>
+            {' · '}
+            <span style={{ textTransform: 'capitalize' }}>{e.kind.replace(/_/g, ' ')}</span>
+            <br />
+            {e.message}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export function DataDashboard({ data, onExportData, onDeleteAccount }: DataDashboardProps) {
   const [statusMessage, setStatusMessage] = useState('');
@@ -140,6 +202,8 @@ export function DataDashboard({ data, onExportData, onDeleteAccount }: DataDashb
       <p style={storageSummaryStyle}>
         Total storage used: <strong>{formatBytes(data.storageUsed)}</strong>
       </p>
+
+      <LocalAdaptationEvents />
 
       {/* Collected data table */}
       {data.collectedData.length > 0 ? (

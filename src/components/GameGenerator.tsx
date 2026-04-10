@@ -5,21 +5,32 @@ import type { Genre } from '../types/common';
 import type { AccessibilityProfile } from '../types/player';
 import type { GameSpec } from '../types/game';
 import {
-  GameGeneratorService,
   type GameGenerationResult,
   type ConflictDescription,
+  type GameGenerationRequest,
 } from '../services/game-generator';
+import { apiGameGenerator } from '../services/game-generator-client';
 import { GameRenderer, type RenderPhase } from '../engine/game-renderer';
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
+/** Minimal surface used by this UI (local service or API client). */
+export type GameGeneratorBackend = {
+  generateGame: (request: GameGenerationRequest) => Promise<GameGenerationResult>;
+  modifyGame: (
+    gameId: string,
+    modifications: string,
+    profile: AccessibilityProfile,
+  ) => Promise<GameGenerationResult>;
+};
+
 export interface GameGeneratorProps {
   /** Player's accessibility profile used for game generation */
   profile: AccessibilityProfile;
-  /** Optional custom GameGeneratorService instance (useful for testing) */
-  generatorService?: GameGeneratorService;
+  /** Optional backend (defaults to `/api/games/*` routes) */
+  generatorService?: GameGeneratorBackend;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +82,7 @@ export function GameGenerator({ profile, generatorService }: GameGeneratorProps)
   const [isModifying, setIsModifying] = useState(false);
   const [renderPhase, setRenderPhase] = useState<RenderPhase | null>(null);
 
-  const serviceRef = useRef(generatorService ?? new GameGeneratorService());
+  const serviceRef = useRef<GameGeneratorBackend>(generatorService ?? apiGameGenerator);
   const gameContainerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
   const statusRef = useRef<HTMLDivElement>(null);

@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useId } from 'react';
 import type { AccessibilityProfile } from '../types/player';
+import { getProfileAudioVolume } from '../utils/audio-volume';
 
 export interface WhackAMoleProps {
   profile: AccessibilityProfile;
@@ -33,7 +34,7 @@ function getAdaptations(profile: AccessibilityProfile) {
   return { gridSize, moleDurationMs: isRelaxedMode ? 0 : moleDurationMs, spawnIntervalMs: isRelaxedMode ? 0 : spawnIntervalMs, holeSize, highContrast, audioEnabled, enhancedVisual, isRelaxedMode };
 }
 
-function createSoundEngine() {
+function createSoundEngine(masterVolume = 1) {
   let ctx: AudioContext | null = null;
   function getCtx(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -44,7 +45,7 @@ function createSoundEngine() {
     const c = getCtx(); if (!c) return;
     const osc = c.createOscillator(); const gain = c.createGain();
     osc.type = type; osc.frequency.setValueAtTime(freq, c.currentTime);
-    gain.gain.setValueAtTime(vol, c.currentTime);
+    gain.gain.setValueAtTime(Math.max(0, Math.min(1, vol * masterVolume)), c.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur / 1000);
     osc.connect(gain); gain.connect(c.destination); osc.start(); osc.stop(c.currentTime + dur / 1000);
   }
@@ -67,6 +68,7 @@ interface SoundEvent { id: number; text: string; }
 
 export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
   const adapt = getAdaptations(profile);
+  const audioVolume = getProfileAudioVolume(profile);
   const totalHoles = adapt.gridSize * adapt.gridSize;
 
   const [moles, setMoles] = useState<Mole[]>([]);
@@ -95,9 +97,9 @@ export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
   }, []);
 
   useEffect(() => {
-    if (adapt.audioEnabled) soundRef.current = createSoundEngine();
+    if (adapt.audioEnabled) soundRef.current = createSoundEngine(audioVolume);
     return () => { soundRef.current?.cleanup(); soundRef.current = null; };
-  }, [adapt.audioEnabled]);
+  }, [adapt.audioEnabled, audioVolume]);
 
   useEffect(() => {
     if (flashEffect) {
@@ -403,6 +405,7 @@ export function WhackAMole({ profile, onGameComplete }: WhackAMoleProps) {
           <li>Hole size: {adapt.holeSize}px</li>
           <li>High contrast: {adapt.highContrast ? 'Yes' : 'No'}</li>
           <li>Audio: {adapt.audioEnabled ? 'Enabled' : 'Disabled — visual bounce active'}</li>
+          <li>Audio volume: {Math.round(audioVolume * 100)}%</li>
           <li>Keyboard: Arrow keys + Enter, or number keys 1-{totalHoles}</li>
           <li>Screen reader: Mole positions announced via aria-live</li>
         </ul>

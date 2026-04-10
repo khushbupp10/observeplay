@@ -175,6 +175,42 @@ describe('buildObservations', () => {
     expect(obs.inputAccuracySamples).toEqual([0.8]);
     expect(obs.audioResponsivenessResults.hearingCapability).toBe('full');
   });
+
+  it('respects skip preferences for visual and audio assessments', () => {
+    const inputState: InputAssessmentState = {
+      detectedMethods: new Set(['keyboard']),
+      responseTimes: [400, 450],
+      accuracyHits: 2,
+      accuracyTotal: 2,
+      targets: [],
+      activeTargetIndex: 5,
+      targetShownAt: 0,
+    };
+
+    const visualState: VisualAssessmentState = {
+      currentSizeIndex: 1,
+      sizeResults: [true],
+      currentContrastIndex: 1,
+      contrastResults: [true],
+      phase: 'size',
+    };
+
+    const audioState: AudioAssessmentState = {
+      currentTestIndex: 1,
+      results: [true],
+      phase: 'testing',
+    };
+
+    const obs = buildObservations(inputState, visualState, audioState, {
+      skipVisualAssessment: true,
+      skipAudioAssessment: true,
+    });
+
+    expect(obs.visualTrackingResults.minReadableTextSize).toBe(24);
+    expect(obs.visualTrackingResults.minContrastRatio).toBe(7);
+    expect(obs.audioResponsivenessResults.hearingCapability).toBe('none');
+    expect(obs.cognitiveAssessment.preferredInstructionFormat).toBe('audio');
+  });
 });
 
 // ---------------------------------------------------------------------------

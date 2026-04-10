@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef, useId } from 'react';
+import { useState, useCallback, useEffect, useRef, useId, useMemo } from 'react';
 import type { AccessibilityProfile } from '../types/player';
+import { recordAdaptationTelemetry } from '../utils/adaptation-telemetry';
+import { getProfileAudioVolume } from '../utils/audio-volume';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -77,14 +79,25 @@ function getAdaptations(profile: AccessibilityProfile) {
   const audioEnabled = profile.hearingCapability !== 'none';
   const enhancedVisual = profile.hearingCapability === 'none' || profile.hearingCapability === 'partial';
   const cols = 4;
-  return { pairCount, cardSize, emojiSize, flipDelayMs, highContrast, showLabels, cols, audioEnabled, enhancedVisual, isScreenReaderLikely };
+  return {
+    pairCount,
+    cardSize,
+    emojiSize,
+    flipDelayMs,
+    highContrast,
+    showLabels,
+    cols,
+    audioEnabled,
+    enhancedVisual,
+    isScreenReaderLikely,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Sound engine
 // ---------------------------------------------------------------------------
 
-function createSoundEngine() {
+function createSoundEngine(masterVolume = 1) {
   let ctx: AudioContext | null = null;
   function getCtx(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -95,7 +108,7 @@ function createSoundEngine() {
     const c = getCtx(); if (!c) return;
     const osc = c.createOscillator(); const gain = c.createGain();
     osc.type = type; osc.frequency.setValueAtTime(frequency, c.currentTime);
-    gain.gain.setValueAtTime(volume, c.currentTime);
+    gain.gain.setValueAtTime(Math.max(0, Math.min(1, volume * masterVolume)), c.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + durationMs / 1000);
     osc.connect(gain); gain.connect(c.destination); osc.start(); osc.stop(c.currentTime + durationMs / 1000);
   }
@@ -121,8 +134,11 @@ interface SoundEvent {
 // ---------------------------------------------------------------------------
 
 export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
-  const adaptations = getAdaptations(profile);
-  const [cards, setCards] = useState<Card[]>(() => createDeck(adaptations.pairCount));
+  const adaptations = useMemo(() => getAdaptations(profile), [profile]);
+  const audioVolume = useMemo(() => getProfileAudioVolume(profile), [profile]);
+  const [sessionKey, setSessionKey] = useState(0);
+  const [adaptationLog, setAdaptationLog] = useState<{ id: string; message: string; at: number }[]>([]);
+  const [cards, setCards] = useState<Card[]>(() => createDeck(getAdaptations(profile).pairCount));
   const [flippedIds, setFlippedIds] = useState<number[]>([]);
   const [moves, setMoves] = useState(0);
   const [matchedCount, setMatchedCount] = useState(0);
@@ -155,9 +171,44 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
   }, []);
 
   useEffect(() => {
-    if (adaptations.audioEnabled) soundRef.current = createSoundEngine();
+    if (adaptations.audioEnabled) soundRef.current = createSoundEngine(audioVolume);
     return () => { soundRef.current?.cleanup(); soundRef.current = null; };
-  }, [adaptations.audioEnabled]);
+  }, [adaptations.audioEnabled, audioVolume]);
+
+  useEffect(() => {
+    setCards(createDeck(adaptations.pairCount));
+  }, [adaptations.pairCount]);
+
+  useEffect(() => {
+    const now = Date.now();
+    const lines: { id: string; message: string; at: number }[] = [
+      { id: 'pairs', message: `Pair count ${adaptations.pairCount} (pacing and cognitive load).`, at: now },
+      {
+        id: 'visual',
+        message: `Card size ${adaptations.cardSize}px; labels ${adaptations.showLabels ? 'on' : 'off'}; high contrast ${adaptations.highContrast ? 'on' : 'off'}.`,
+        at: now,
+      },
+      {
+        id: 'timing',
+        message:
+          adaptations.flipDelayMs === 0
+            ? 'No automatic flip-back — advance manually (screen reader / pacing friendly).'
+            : `Flip-back delay ${adaptations.flipDelayMs}ms.`,
+        at: now,
+      },
+      {
+        id: 'audio',
+        message: adaptations.audioEnabled ? 'Audio feedback enabled.' : 'Visual flash replaces audio cues.',
+        at: now,
+      },
+    ];
+    setAdaptationLog(lines);
+    recordAdaptationTelemetry({
+      game: 'memory',
+      kind: 'profile_adaptation',
+      message: lines.map((l) => l.message).join(' '),
+    });
+  }, [adaptations, sessionKey]);
 
   useEffect(() => {
     if (flashEffect) {
@@ -182,6 +233,12 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
       if (adaptations.audioEnabled) { soundRef.current?.win(); }
       else { addSoundEvent('🔊 Victory fanfare'); }
       setFlashEffect('win');
+      recordAdaptationTelemetry({
+        game: 'memory',
+        kind: 'session_summary',
+        message: `Completed ${totalPairs} pairs in ${moves} moves, ${formatTime(finalTime)}`,
+        meta: { moves, pairs: totalPairs, timeMs: finalTime },
+      });
       onGameComplete?.(moves, finalTime);
     }
   }, [matchedCount, totalPairs, moves, startTime, onGameComplete, adaptations.audioEnabled, addSoundEvent]);
@@ -284,6 +341,7 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
     setStartTime(0); setElapsedMs(0); setIsProcessing(false);
     setFocusedIndex(0); setSoundEvents([]);
     setStatusMessage('New game started. Find matching pairs!');
+    setSessionKey((k) => k + 1);
   }, [adaptations.pairCount]);
 
   const cardBg = adaptations.highContrast ? '#1a1a1a' : '#1a73e8';
@@ -329,6 +387,29 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
         <span>Matched: <strong>{matchedCount}/{totalPairs}</strong></span>
         <span>Time: <strong>{formatTime(elapsedMs)}</strong></span>
       </div>
+
+      {adaptationLog.length > 0 && (
+        <div
+          role="region"
+          aria-label="Session adaptation log"
+          style={{
+            marginBottom: '16px',
+            padding: '12px 14px',
+            borderRadius: '8px',
+            backgroundColor: '#f3f7ff',
+            border: '1px solid #90caf9',
+            fontSize: '14px',
+            color: '#0d47a1',
+          }}
+        >
+          <h3 style={{ fontSize: '15px', margin: '0 0 8px 0', fontWeight: 600 }}>Session adaptation log</h3>
+          <ul style={{ margin: 0, paddingLeft: '20px', lineHeight: 1.6 }}>
+            {adaptationLog.map((e) => (
+              <li key={e.id}>{e.message}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Start button */}
       {!gameStarted && !gameComplete && (
@@ -492,6 +573,7 @@ export function MemoryGame({ profile, onGameComplete }: MemoryGameProps) {
           <li>High contrast: {adaptations.highContrast ? 'Yes' : 'No'}</li>
           <li>Text labels: {adaptations.showLabels ? 'Shown' : 'Hidden'}</li>
           <li>Audio feedback: {adaptations.audioEnabled ? 'Enabled' : 'Disabled — using visual flash feedback instead'}</li>
+          <li>Audio volume: {Math.round(audioVolume * 100)}%</li>
           <li>Arrow key navigation: Enabled (ArrowUp/Down/Left/Right)</li>
           <li>Input: keyboard (Enter/Space + arrow keys) + mouse + touch</li>
         </ul>

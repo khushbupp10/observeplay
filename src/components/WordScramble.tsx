@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useId } from 'react';
 import type { AccessibilityProfile } from '../types/player';
+import { getProfileAudioVolume } from '../utils/audio-volume';
 
 export interface WordScrambleProps {
   profile: AccessibilityProfile;
@@ -49,8 +50,8 @@ function getAdaptations(profile: AccessibilityProfile) {
     : 'medium';
   const timeLimitMs =
     profile.preferredPacing === 'slow' ? 0
-    : profile.responseTimeMs > 800 ? 30000
-    : 20000;
+    : profile.responseTimeMs > 800 ? 45000
+    : 30000;
   const textSize = Math.max(24, profile.minReadableTextSize * 1.5);
   const showHints = profile.preferredPacing === 'slow' || profile.maxSimultaneousElements <= 3;
   const highContrast = profile.minContrastRatio > 4.5;
@@ -59,7 +60,7 @@ function getAdaptations(profile: AccessibilityProfile) {
   return { difficulty, timeLimitMs, textSize, showHints, highContrast, audioEnabled, enhancedVisual };
 }
 
-function createSoundEngine() {
+function createSoundEngine(masterVolume = 1) {
   let ctx: AudioContext | null = null;
   function getCtx(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -70,7 +71,7 @@ function createSoundEngine() {
     const c = getCtx(); if (!c) return;
     const osc = c.createOscillator(); const gain = c.createGain();
     osc.type = type; osc.frequency.setValueAtTime(freq, c.currentTime);
-    gain.gain.setValueAtTime(vol, c.currentTime);
+    gain.gain.setValueAtTime(Math.max(0, Math.min(1, vol * masterVolume)), c.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur / 1000);
     osc.connect(gain); gain.connect(c.destination); osc.start(); osc.stop(c.currentTime + dur / 1000);
   }
@@ -92,6 +93,7 @@ interface SoundEvent { id: number; text: string; }
 
 export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
   const adapt = getAdaptations(profile);
+  const audioVolume = getProfileAudioVolume(profile);
   const words = WORD_BANK[adapt.difficulty];
 
   const [currentWordIdx, setCurrentWordIdx] = useState(0);
@@ -104,6 +106,7 @@ export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
   const [flashEffect, setFlashEffect] = useState<'correct' | 'wrong' | null>(null);
   const [hintRevealed, setHintRevealed] = useState(0);
   const [timeLeft, setTimeLeft] = useState(0);
+  const [extraTimeMs, setExtraTimeMs] = useState(0);
   const [startTime, setStartTime] = useState(0);
   const [usedIndices, setUsedIndices] = useState<number[]>([]);
   const [soundEvents, setSoundEvents] = useState<SoundEvent[]>([]);
@@ -120,9 +123,9 @@ export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
   }, []);
 
   useEffect(() => {
-    if (adapt.audioEnabled) soundRef.current = createSoundEngine();
+    if (adapt.audioEnabled) soundRef.current = createSoundEngine(audioVolume);
     return () => { soundRef.current?.cleanup(); soundRef.current = null; };
-  }, [adapt.audioEnabled]);
+  }, [adapt.audioEnabled, audioVolume]);
 
   useEffect(() => {
     if (flashEffect) {
@@ -134,15 +137,16 @@ export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
   // Timer
   useEffect(() => {
     if (gameState === 'playing' && adapt.timeLimitMs > 0) {
+      const totalLimitMs = adapt.timeLimitMs + extraTimeMs;
       timerRef.current = setInterval(() => {
         const elapsed = Date.now() - startTime;
-        const left = Math.max(0, adapt.timeLimitMs - elapsed);
+        const left = Math.max(0, totalLimitMs - elapsed);
         setTimeLeft(left);
         if (left <= 0) setGameState('done');
       }, 100);
       return () => { if (timerRef.current) clearInterval(timerRef.current); };
     }
-  }, [gameState, startTime, adapt.timeLimitMs]);
+  }, [gameState, startTime, adapt.timeLimitMs, extraTimeMs]);
 
   useEffect(() => {
     if (gameState === 'done') {
@@ -177,6 +181,7 @@ export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
 
   const startGame = useCallback(() => {
     setScore(0); setRoundsPlayed(0); setUsedIndices([]);
+    setExtraTimeMs(0);
     setGameState('playing'); setStartTime(Date.now());
     setSoundEvents([]);
     if (adapt.timeLimitMs > 0) setTimeLeft(adapt.timeLimitMs);
@@ -229,6 +234,20 @@ export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
     if (adapt.audioEnabled) soundRef.current?.letterSpeak(letter);
   }, [adapt.audioEnabled]);
 
+  const handleAddTime = useCallback(() => {
+    if (adapt.timeLimitMs <= 0 || gameState !== 'playing') return;
+    setExtraTimeMs((prev) => {
+      const next = Math.min(prev + 10_000, 60_000);
+      const added = next - prev;
+      if (added > 0) {
+        setStatusMessage(`Added ${Math.round(added / 1000)} seconds. Keep going!`);
+      } else {
+        setStatusMessage('Maximum extra time already added.');
+      }
+      return next;
+    });
+  }, [adapt.timeLimitMs, gameState]);
+
   return (
     <section aria-labelledby={headingId} style={{ maxWidth: '600px', margin: '0 auto' }}>
       <style>{`
@@ -268,7 +287,12 @@ export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
       <div style={{ display: 'flex', gap: '20px', marginBottom: '12px', fontSize: '15px', color: '#333', flexWrap: 'wrap' }}>
         <span>Score: <strong>{score}/{roundsPlayed}</strong></span>
         <span>Round: <strong>{Math.min(roundsPlayed + 1, TOTAL_ROUNDS)}/{TOTAL_ROUNDS}</strong></span>
-        {adapt.timeLimitMs > 0 && <span>Time: <strong>{Math.ceil(timeLeft / 1000)}s</strong></span>}
+        {adapt.timeLimitMs > 0 && (
+          <span>
+            Time: <strong>{Math.ceil(timeLeft / 1000)}s</strong>
+            {extraTimeMs > 0 ? ` (+${Math.round(extraTimeMs / 1000)}s added)` : ''}
+          </span>
+        )}
         {currentWord && <span>Category: <strong>{currentWord.category}</strong></span>}
       </div>
 
@@ -396,6 +420,11 @@ export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
                   Hint
                 </button>
               )}
+              {adapt.timeLimitMs > 0 && (
+                <button type="button" onClick={handleAddTime} style={{ ...actionBtnStyle, backgroundColor: '#6d4c41' }}>
+                  Need more time (+10s)
+                </button>
+              )}
             </div>
             {hintRevealed > 0 && (
               <p id="word-hint-text" style={srOnly}>
@@ -424,10 +453,11 @@ export function WordScramble({ profile, onGameComplete }: WordScrambleProps) {
         <summary style={{ cursor: 'pointer', fontWeight: 500 }}>Accessibility Adaptations Applied</summary>
         <ul style={{ marginTop: '8px', paddingLeft: '20px', lineHeight: 1.8 }}>
           <li>Difficulty: {adapt.difficulty} (word length based on pacing)</li>
-          <li>Timer: {adapt.timeLimitMs > 0 ? `${adapt.timeLimitMs / 1000}s` : 'Disabled'}</li>
+          <li>Timer: {adapt.timeLimitMs > 0 ? `${adapt.timeLimitMs / 1000}s base (up to +60s extendable)` : 'Disabled'}</li>
           <li>Text size: {adapt.textSize}px</li>
           <li>Hints: {adapt.showHints ? 'Available' : 'Hidden'}</li>
           <li>Audio: {adapt.audioEnabled ? 'Enabled (letter pronunciation)' : 'Disabled — visual feedback active'}</li>
+          <li>Audio volume: {Math.round(audioVolume * 100)}%</li>
           <li>Full scrambled word announced for screen readers</li>
         </ul>
       </details>
