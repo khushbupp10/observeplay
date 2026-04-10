@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useId } from 'react';
+import { useState, useCallback, useRef, useId, useEffect } from 'react';
 import type { Genre } from '../types/common';
 import type { AccessibilityProfile } from '../types/player';
 import type { GameSpec } from '../types/game';
