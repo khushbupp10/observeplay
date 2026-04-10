@@ -543,12 +543,30 @@ export class GameRenderer {
     await Promise.allSettled(loadPromises);
 
     if (!this.destroyed) {
-      const msg =
-        this.assetStatus.failed > 0
-          ? `Ready to play! (${this.assetStatus.failed} assets failed to load)`
-          : 'Ready to play!';
-      this.updateStatusDisplay(msg);
+      this.updateStatusDisplay(this.buildReadyStatusMessage());
+      if (this.assetStatus.failed > 0) {
+        this.emitEvent({
+          type: 'error',
+          timestamp: Date.now(),
+          payload: {
+            reason: 'asset_load_partial_failure',
+            total: this.assetStatus.total,
+            loaded: this.assetStatus.loaded,
+            failed: this.assetStatus.failed,
+          },
+        });
+      }
     }
+  }
+
+  private buildReadyStatusMessage(): string {
+    if (this.assetStatus.failed === 0) {
+      return 'Ready to play!';
+    }
+    if (this.assetStatus.loaded > 0) {
+      return 'Ready to play! Some optional sounds or visuals are unavailable.';
+    }
+    return 'Ready to play in basic mode. Optional media could not be loaded.';
   }
 
   private updateScoreDisplay(): void {

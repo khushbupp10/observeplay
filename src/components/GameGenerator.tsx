@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useId, useEffect } from 'react';
+import { useState, useCallback, useRef, useId } from 'react';
 import type { Genre } from '../types/common';
 import type { AccessibilityProfile } from '../types/player';
 import type { GameSpec } from '../types/game';
@@ -10,7 +10,7 @@ import {
   type GameGenerationRequest,
 } from '../services/game-generator';
 import { apiGameGenerator } from '../services/game-generator-client';
-import { GameRenderer, type RenderPhase } from '../engine/game-renderer';
+import { PlayableGame } from './PlayableGame';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -80,11 +80,8 @@ export function GameGenerator({ profile, generatorService }: GameGeneratorProps)
   const [generatedSpec, setGeneratedSpec] = useState<GameSpec | null>(null);
   const [modificationText, setModificationText] = useState('');
   const [isModifying, setIsModifying] = useState(false);
-  const [renderPhase, setRenderPhase] = useState<RenderPhase | null>(null);
 
   const serviceRef = useRef<GameGeneratorBackend>(generatorService ?? apiGameGenerator);
-  const gameContainerRef = useRef<HTMLDivElement>(null);
-  const rendererRef = useRef<GameRenderer | null>(null);
   const statusRef = useRef<HTMLDivElement>(null);
 
   const headingId = useId();
@@ -93,36 +90,6 @@ export function GameGenerator({ profile, generatorService }: GameGeneratorProps)
   const modifyLabelId = useId();
   const conflictHeadingId = useId();
   const statusId = useId();
-
-  // Cleanup renderer on unmount
-  useEffect(() => {
-    return () => {
-      rendererRef.current?.destroy();
-    };
-  }, []);
-
-  // Render game when spec changes
-  useEffect(() => {
-    if (!generatedSpec || !gameContainerRef.current) return;
-
-    // Destroy previous renderer
-    rendererRef.current?.destroy();
-
-    const renderer = new GameRenderer({
-      container: gameContainerRef.current,
-      gameSpec: generatedSpec,
-      onEvent: (event) => {
-        if (event.type === 'phase_changed') {
-          setRenderPhase(event.payload.phase as RenderPhase);
-        }
-      },
-    });
-
-    rendererRef.current = renderer;
-    renderer.render().catch(() => {
-      /* rendering errors handled by renderer */
-    });
-  }, [generatedSpec]);
 
   const announce = useCallback((msg: string) => {
     // The aria-live region will pick up changes to statusRef content
@@ -143,7 +110,6 @@ export function GameGenerator({ profile, generatorService }: GameGeneratorProps)
       setErrorMessage('');
       setGeneratedSpec(null);
       setModificationText('');
-      rendererRef.current?.destroy();
 
       // Phase 1: Parsing
       setPhase('parsing');
@@ -372,18 +338,9 @@ export function GameGenerator({ profile, generatorService }: GameGeneratorProps)
           <h3 style={subHeadingStyle}>
             {generatedSpec.title}
           </h3>
-          {renderPhase && renderPhase !== 'complete' && (
-            <p style={renderStatusStyle} aria-live="polite">
-              {renderPhase === 'skeleton' && 'Setting up game layout…'}
-              {renderPhase === 'interactive' && 'Game is interactive — assets still loading…'}
-              {renderPhase === 'assets-loading' && 'Loading game assets…'}
-            </p>
-          )}
-          <div
-            ref={gameContainerRef}
-            style={gameContainerStyle}
-            aria-label={`Game: ${generatedSpec.title}`}
-          />
+          <div style={gameContainerStyle}>
+            <PlayableGame gameSpec={generatedSpec} />
+          </div>
         </div>
       )}
 
@@ -557,7 +514,7 @@ const headingStyle: React.CSSProperties = {
 
 const introStyle: React.CSSProperties = {
   fontSize: '16px',
-  color: '#444',
+  color: '#555',
   marginBottom: '24px',
 };
 
@@ -611,21 +568,22 @@ const primaryButtonStyle: React.CSSProperties = {
   fontSize: '16px',
   fontWeight: 600,
   color: '#fff',
-  backgroundColor: '#1a73e8',
+  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
   border: 'none',
-  borderRadius: '6px',
+  borderRadius: '8px',
   cursor: 'pointer',
   fontFamily: 'inherit',
+  boxShadow: '0 2px 8px rgba(102,126,234,0.3)',
 };
 
 const secondaryButtonStyle: React.CSSProperties = {
   padding: '12px 24px',
   fontSize: '16px',
   fontWeight: 600,
-  color: '#1a73e8',
+  color: '#667eea',
   backgroundColor: '#fff',
-  border: '2px solid #1a73e8',
-  borderRadius: '6px',
+  border: '2px solid #667eea',
+  borderRadius: '8px',
   cursor: 'pointer',
   fontFamily: 'inherit',
 };
@@ -650,7 +608,7 @@ const progressItemStyle = (isDone: boolean, isCurrent: boolean): React.CSSProper
   gap: '10px',
   padding: '6px 0',
   fontSize: '15px',
-  color: isDone ? '#1b7a3d' : isCurrent ? '#1a73e8' : '#888',
+  color: isDone ? '#1b5e20' : isCurrent ? '#667eea' : '#888',
   fontWeight: isCurrent ? 600 : 400,
 });
 
@@ -662,8 +620,8 @@ const progressIconStyle = (isDone: boolean, isCurrent: boolean): React.CSSProper
   height: '24px',
   borderRadius: '50%',
   fontSize: '14px',
-  backgroundColor: isDone ? '#e8f5e9' : isCurrent ? '#e3f0ff' : '#eee',
-  color: isDone ? '#1b7a3d' : isCurrent ? '#1a73e8' : '#888',
+  backgroundColor: isDone ? '#e8f5e9' : isCurrent ? 'rgba(102,126,234,0.12)' : '#eee',
+  color: isDone ? '#1b5e20' : isCurrent ? '#667eea' : '#888',
   flexShrink: 0,
 });
 
@@ -753,13 +711,6 @@ const gameContainerStyle: React.CSSProperties = {
   padding: '16px',
   minHeight: '200px',
   backgroundColor: '#fafafa',
-};
-
-const renderStatusStyle: React.CSSProperties = {
-  fontSize: '14px',
-  color: '#555',
-  fontStyle: 'italic',
-  marginBottom: '8px',
 };
 
 const modifyFormStyle: React.CSSProperties = {

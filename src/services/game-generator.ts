@@ -199,11 +199,34 @@ const GENRE_TEMPLATES: Record<Genre, GenreTemplate> = {
 // ---------------------------------------------------------------------------
 
 const GENRE_KEYWORDS: Record<Genre, string[]> = {
-  puzzle: ['puzzle', 'match', 'brain', 'logic', 'riddle', 'sudoku', 'crossword', 'jigsaw', 'tile'],
-  adventure: ['adventure', 'explore', 'quest', 'journey', 'discover', 'treasure', 'dungeon', 'space'],
-  strategy: ['strategy', 'tactical', 'war', 'battle', 'defend', 'tower defense', 'chess', 'plan'],
-  simulation: ['simulation', 'sim', 'build', 'manage', 'farm', 'city', 'tycoon', 'sandbox'],
-  narrative: ['story', 'narrative', 'choose your own', 'visual novel', 'dialogue', 'mystery', 'detective'],
+  puzzle: [
+    'puzzle', 'match', 'brain', 'logic', 'riddle', 'sudoku', 'crossword',
+    'jigsaw', 'tile', 'solitaire', 'card', 'cards', 'tetris', 'minesweeper',
+    'mahjong', 'wordle', 'trivia', 'quiz', 'number', 'math', 'pattern',
+    'sort', 'color', 'connect', 'swap', 'merge', 'block', '2048', 'candy',
+    'bejeweled', 'bubble',
+  ],
+  adventure: [
+    'adventure', 'explore', 'quest', 'journey', 'discover', 'treasure',
+    'dungeon', 'space', 'zelda', 'mario', 'platformer', 'rpg', 'role play',
+    'angry bird', 'angry birds', 'minecraft', 'pokemon', 'pirate',
+    'dragon', 'knight', 'hero', 'mission', 'survive', 'survival',
+  ],
+  strategy: [
+    'strategy', 'tactical', 'war', 'battle', 'defend', 'tower defense',
+    'chess', 'plan', 'army', 'conquer', 'command', 'checkers', 'risk',
+    'civilization', 'clash', 'troops', 'deploy',
+  ],
+  simulation: [
+    'simulation', 'sim', 'build', 'manage', 'farm', 'city', 'tycoon',
+    'sandbox', 'resource', 'construct', 'factory', 'cook', 'cooking',
+    'restaurant', 'shop', 'store', 'garden', 'animal crossing',
+  ],
+  narrative: [
+    'story', 'narrative', 'choose your own', 'visual novel', 'dialogue',
+    'mystery', 'detective', 'horror', 'romance', 'drama', 'thriller',
+    'escape room', 'clue', 'whodunit', 'text adventure',
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -218,7 +241,7 @@ function detectGenre(description: string, preferred?: Genre): Genre {
   if (preferred) return preferred;
 
   const lower = description.toLowerCase();
-  let bestGenre: Genre = 'adventure'; // default
+  let bestGenre: Genre = 'puzzle';
   let bestScore = 0;
 
   for (const [genre, keywords] of Object.entries(GENRE_KEYWORDS) as [Genre, string[]][]) {
@@ -329,24 +352,109 @@ function buildAccessibilityAdaptations(
   return adaptations;
 }
 
+interface GenreAssetPalette {
+  background: string;
+  surface: string;
+  accent: string;
+  text: string;
+}
+
+const GENRE_ASSET_PALETTES: Record<Genre, GenreAssetPalette> = {
+  puzzle: {
+    background: '#13293d',
+    surface: '#1f4e79',
+    accent: '#f5b700',
+    text: '#ffffff',
+  },
+  adventure: {
+    background: '#10381e',
+    surface: '#206a5d',
+    accent: '#ffd166',
+    text: '#ffffff',
+  },
+  strategy: {
+    background: '#2f1847',
+    surface: '#6247aa',
+    accent: '#a7c957',
+    text: '#ffffff',
+  },
+  simulation: {
+    background: '#0f3b57',
+    surface: '#1d5b79',
+    accent: '#9bdaf1',
+    text: '#ffffff',
+  },
+  narrative: {
+    background: '#3d1f47',
+    surface: '#6c3a7a',
+    accent: '#ffd6ff',
+    text: '#ffffff',
+  },
+};
+
+function sanitizeSvgText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function buildSvgDataUri(
+  title: string,
+  subtitle: string,
+  palette: GenreAssetPalette,
+): string {
+  const safeTitle = sanitizeSvgText(title.slice(0, 50));
+  const safeSubtitle = sanitizeSvgText(subtitle.slice(0, 60));
+
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="${safeTitle}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="${palette.background}" />
+      <stop offset="100%" stop-color="${palette.surface}" />
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)" />
+  <circle cx="1080" cy="160" r="130" fill="${palette.accent}" opacity="0.25" />
+  <rect x="120" y="140" width="1040" height="420" rx="24" fill="${palette.background}" opacity="0.34" />
+  <text x="640" y="320" text-anchor="middle" font-size="68" font-family="system-ui, sans-serif" fill="${palette.text}" font-weight="700">${safeTitle}</text>
+  <text x="640" y="390" text-anchor="middle" font-size="32" font-family="system-ui, sans-serif" fill="${palette.text}" opacity="0.92">${safeSubtitle}</text>
+</svg>`.trim();
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+// Small inline WAV clips so generated games remain playable without
+// deployment-specific static audio files.
+const BACKGROUND_AUDIO_DATA_URI =
+  'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
+
+const AMBIENT_AUDIO_DATA_URI =
+  'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAGsRQh4mI84eXhIaAY3vUuLi3K3gs+zL/XcPEx0MI88fNxROA4nxj+MP3b3f5eqZ+3QNxxvOIq8g+xV/BZPz6uRf3e3eK+lq+WMLXhptIm8hqRerB6r1YObR3T7eiedC90YJ2xjpIQ0iPxnOCcv38Odm3rHdAOYj9SEHPxdCIYgiuxroC/X5mOke30fdkeQP8/QEjBV6IOEiHRz2DSX8Vuv23wDdPeMI8cICwhOSHxYjYh31D1n+Ku3v4N3cB+IR740A5RGJHigjiR7lEY0AEe8H4t3c7+Aq7Vn+9Q9iHRYjkh/CE8ICCPE94wDd9t9W6yX89g0dHOEieiCMFfQED/OR5EfdHt+Y6fX56Au7GogiQiE/FyEHI/UA5rHdZt7w58v3zgk/GQ0i6SHbGEYJQveJ5z7e0d1g5qr1qwepF28hbSJeGmMLavkr6e3eX93q5JPzfwX7Fa8gziLHG3QNmfvl6r3fD92P44nxTgM3FM8fDCMTHXcPy/2z7K3g4txS4o3vGgFeEs4eJiNCHmsRAACV7r7h2twy4aLt5v5zEK4dHiNTH00TNQKJ8O3i9Nwx4Mnrsvx3DnEc8SJDIBsVZwSM8jnkMt1R3wXqgfptDBYboSITIdUWlgad9KLlk92R3lfoVfhWCqAZLyLCIXcYvgi69iXnF97z3cHmMvY1CBAYmiFPIgAa3Qrf+MHovt543UXlGPQLBmgW4iC5Im8b8QwM+3Tqht8f3ePjCvLbA6oUCiAAI8Mc+A4+/T7sbuDq3J7iC/CnAdYSER8jI/kd7xBz/xvud+HY3HfhG+5z/+8Q+R0jIxEf1hKnAQvwnuLq3G7gPuw+/fgOwxwAIwogqhTbAwry4+Mf3YbfdOoM+/EMbxu5IuIgaBYLBhj0ReV43b7ewejf+N0KABpPIpohEBg1CDL2webz3RfeJee69r4IdxjCIS8ioBlWClX4V+iR3pPdouWd9JYG1RYTIaEiFhttDIH6BepR3zLdOeSM8mcEGxVDIPEicRx3DrL8yesx4PTc7eKJ8DUCTRNTHx4jrh1zEOb+ou0y4drcvuGV7g==';
+
 function generateVisualAssets(genre: Genre, title: string): AssetReference[] {
+  const palette = GENRE_ASSET_PALETTES[genre];
+
   return [
     {
       id: generateId(),
       type: 'image',
-      url: `/assets/${genre}/background.png`,
+      url: buildSvgDataUri(title, `${genre} background`, palette),
       altText: `${title} background scene`,
     },
     {
       id: generateId(),
       type: 'image',
-      url: `/assets/${genre}/ui-elements.png`,
+      url: buildSvgDataUri('Accessible UI', `${genre} controls`, palette),
       altText: `${title} user interface elements`,
     },
     {
       id: generateId(),
       type: 'animation',
-      url: `/assets/${genre}/character.anim`,
+      url: buildSvgDataUri('Character Preview', `${genre} movement placeholder`, palette),
       altText: `${title} character animation`,
     },
   ];
@@ -357,13 +465,13 @@ function generateAudioAssets(genre: Genre, title: string): AssetReference[] {
     {
       id: generateId(),
       type: 'audio',
-      url: `/assets/${genre}/background-music.mp3`,
+      url: BACKGROUND_AUDIO_DATA_URI,
       altText: `${title} background music`,
     },
     {
       id: generateId(),
       type: 'soundscape',
-      url: `/assets/${genre}/ambient.mp3`,
+      url: AMBIENT_AUDIO_DATA_URI,
       altText: `${title} ambient soundscape`,
       spatialPosition: { azimuth: 0, elevation: 0, distance: 0.5 },
     },

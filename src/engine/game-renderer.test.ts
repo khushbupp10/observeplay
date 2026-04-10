@@ -468,7 +468,7 @@ describe('GameRenderer', () => {
       expect(status.loaded).toBe(0);
 
       const statusEl = container.querySelector('[data-status]');
-      expect(statusEl?.textContent).toContain('assets failed to load');
+      expect(statusEl?.textContent).toContain('basic mode');
     });
   });
 
